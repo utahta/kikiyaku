@@ -7,6 +7,18 @@ struct LanguageOption: Identifiable, Sendable {
     let label: String  // display name (e.g. "English (United States)")
 }
 
+/// A named snapshot of the translation-backend configuration, e.g.
+/// "local qwen" (LM Studio) vs "OpenAI cloud". Keys are deliberately not
+/// included: they live in the Keychain per endpoint and follow automatically.
+struct BackendProfile: Codable, Identifiable, Hashable, Sendable {
+    var name: String
+    var backend: String
+    var openAIBaseURL: String
+    var openAIModel: String
+    var claudeModel: String
+    var id: String { name }
+}
+
 /// App settings. Persisted in UserDefaults (com.utahta.kikiyaku), so they can
 /// also be changed from the CLI, e.g. `defaults write com.utahta.kikiyaku
 /// sourceLocaleID en-GB`.
@@ -76,14 +88,32 @@ enum Preferences {
         }
     }
 
-    /// Translation backend: "claude" (persistent CLI) / "openai" (OpenAI-compatible
-    /// API, local servers included).
+    /// Translation backend: "openai" (OpenAI-compatible API, local servers
+    /// included — the default) / "claude" (persistent CLI).
     static var translationBackend: String {
         get {
-            let value = UserDefaults.standard.string(forKey: backendKey) ?? "claude"
-            return ["claude", "openai"].contains(value) ? value : "claude"
+            let value = UserDefaults.standard.string(forKey: backendKey) ?? "openai"
+            return ["claude", "openai"].contains(value) ? value : "openai"
         }
         set { UserDefaults.standard.set(newValue, forKey: backendKey) }
+    }
+
+    private static let profilesKey = "backendProfiles"
+
+    /// Saved backend configurations, switchable from the settings screen.
+    /// API keys are not part of a profile — they are stored per endpoint in
+    /// the Keychain and follow the endpoint automatically.
+    static var backendProfiles: [BackendProfile] {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: profilesKey),
+                  let profiles = try? JSONDecoder().decode([BackendProfile].self, from: data) else {
+                return []
+            }
+            return profiles
+        }
+        set {
+            UserDefaults.standard.set(try? JSONEncoder().encode(newValue), forKey: profilesKey)
+        }
     }
 
     /// Endpoint of the OpenAI-compatible API. Cloud: https://api.openai.com;

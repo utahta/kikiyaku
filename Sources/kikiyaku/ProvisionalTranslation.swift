@@ -34,6 +34,29 @@ final class LLMSessionBox: @unchecked Sendable {
     }
 }
 
+/// Thread-safe handle to the provisional request currently on the wire, so the
+/// engine can abort it the moment its result is known to be unwanted (the
+/// utterance finalized, or the boundaries were retracted). Left running, the
+/// doomed request keeps occupying the LLM server while the final translation —
+/// the one the user is actually waiting for — competes with it for compute.
+final class ProvisionalWorkBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var work: Task<String, Error>?
+
+    func set(_ newWork: Task<String, Error>?) {
+        lock.lock()
+        work = newWork
+        lock.unlock()
+    }
+
+    func cancelCurrent() {
+        lock.lock()
+        let current = work
+        lock.unlock()
+        current?.cancel()
+    }
+}
+
 /// Tracks sentence boundaries in the volatile transcription text and decides
 /// when to request a provisional translation.
 ///

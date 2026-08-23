@@ -14,6 +14,8 @@ struct SettingsView: View {
     @State private var liveLines = Preferences.liveLines
     @State private var translationEnabled = Preferences.translationEnabled
     @State private var backend = Preferences.translationBackend
+    @State private var profiles = Preferences.backendProfiles
+    @State private var profileEditor: ProfileEditorContext?
     @State private var provisionalEnabled = Preferences.provisionalTranslationEnabled
     @State private var openAIBaseURL = Preferences.openAIBaseURL
     @State private var openAIModel = Preferences.openAIModel
@@ -116,6 +118,8 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
 
+                Divider()
+
                 Toggle(L("settings.translation"), isOn: $translationEnabled)
                     .onChange(of: translationEnabled) {
                         Preferences.translationEnabled = translationEnabled
@@ -123,6 +127,50 @@ struct SettingsView: View {
                 Text(L("settings.translationCaption"))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
+
+                LabeledContent(L("settings.profiles")) {
+                    HStack {
+                        if !profiles.isEmpty {
+                            Menu(L("settings.profiles.apply")) {
+                                ForEach(profiles) { profile in
+                                    Button(profile.name) { apply(profile) }
+                                }
+                            }
+                            .controlSize(.small)
+                            .fixedSize()
+                            Menu(L("settings.profiles.edit")) {
+                                ForEach(profiles) { profile in
+                                    Button(profile.name) {
+                                        profileEditor = ProfileEditorContext(
+                                            originalName: profile.name, profile: profile)
+                                    }
+                                }
+                            }
+                            .controlSize(.small)
+                            .fixedSize()
+                        }
+                        Button(L("settings.profiles.add")) {
+                            // Prefill with the current settings — the common case
+                            // is "save what I have working right now".
+                            profileEditor = ProfileEditorContext(
+                                originalName: nil,
+                                profile: BackendProfile(
+                                    name: "",
+                                    backend: backend,
+                                    openAIBaseURL: openAIBaseURL,
+                                    openAIModel: openAIModel,
+                                    claudeModel: claudeModel
+                                )
+                            )
+                        }
+                        .controlSize(.small)
+                    }
+                }
+                .disabled(!translationEnabled)
+                Text(L("settings.profilesCaption"))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+
 
                 Picker(L("settings.backend"), selection: $backend) {
                     Text(L("settings.backend.claude")).tag("claude")
@@ -132,15 +180,6 @@ struct SettingsView: View {
                 .onChange(of: backend) {
                     Preferences.translationBackend = backend
                 }
-
-                Toggle(L("settings.provisional"), isOn: $provisionalEnabled)
-                    .disabled(!translationEnabled || backend != "openai")
-                    .onChange(of: provisionalEnabled) {
-                        Preferences.provisionalTranslationEnabled = provisionalEnabled
-                    }
-                Text(L("settings.provisionalCaption"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
 
                 if backend == "openai" {
                     LabeledContent(L("settings.openaiBaseURL")) {
@@ -214,6 +253,15 @@ struct SettingsView: View {
                     Text(L("settings.openaiCaption"))
                         .font(.caption)
                         .foregroundStyle(.tertiary)
+
+                    Toggle(L("settings.provisional"), isOn: $provisionalEnabled)
+                        .disabled(!translationEnabled)
+                        .onChange(of: provisionalEnabled) {
+                            Preferences.provisionalTranslationEnabled = provisionalEnabled
+                        }
+                    Text(L("settings.provisionalCaption"))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
 
                 if backend == "claude" {
@@ -245,20 +293,22 @@ struct SettingsView: View {
                     Text(L("settings.claudePathCaption"))
                         .font(.caption)
                         .foregroundStyle(.tertiary)
+
+                    Picker(L("settings.claudeModel"), selection: $claudeModel) {
+                        ForEach(claudeModelOptions, id: \.self) { id in
+                            Text(claudeModelLabel(id)).tag(id)
+                        }
+                    }
+                    .disabled(!translationEnabled)
+                    .onChange(of: claudeModel) {
+                        Preferences.claudeModel = claudeModel
+                    }
+                    Text(L("settings.modelCaption"))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
 
-                Picker(L("settings.claudeModel"), selection: $claudeModel) {
-                    ForEach(claudeModelOptions, id: \.self) { id in
-                        Text(claudeModelLabel(id)).tag(id)
-                    }
-                }
-                .disabled(!translationEnabled || backend != "claude")
-                .onChange(of: claudeModel) {
-                    Preferences.claudeModel = claudeModel
-                }
-                Text(L("settings.modelCaption"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                Divider()
 
                 LabeledContent(L("settings.systemPrompt")) {
                     VStack(alignment: .leading, spacing: 6) {
@@ -440,6 +490,61 @@ struct SettingsView: View {
             sourceOptions = sources
             targetOptions = targets
         }
+        .sheet(item: $profileEditor) { context in
+            ProfileEditorSheet(
+                context: context,
+                onSave: { updated in
+                    profiles.removeAll { $0.name == context.originalName || $0.name == updated.name }
+                    profiles.append(updated)
+                    Preferences.backendProfiles = profiles
+                    // The editor may have just rewritten the Keychain key for
+                    // the endpoint this screen is currently displaying. Resync,
+                    // or the stale field value would be sent by "fetch models"
+                    // and — worse — written back over the freshly saved key by
+                    // its own onChange on the next edit.
+                    if updated.backend == "openai",
+                       OpenAICompatSession.keychainOriginKey(forBaseURL: updated.openAIBaseURL)
+                           == OpenAICompatSession.keychainOriginKey(forBaseURL: openAIBaseURL) {
+                        openAIKey = OpenAICompatSession.apiKey(forBaseURL: openAIBaseURL) ?? ""
+                        modelFetchID += 1
+                        fetchedModels = []
+                        modelFetchError = nil
+                        fetchingModels = false
+                    }
+                    profileEditor = nil
+                },
+                onDelete: context.originalName == nil ? nil : {
+                    profiles.removeAll { $0.name == context.originalName }
+                    Preferences.backendProfiles = profiles
+                    profileEditor = nil
+                },
+                onCancel: { profileEditor = nil }
+            )
+        }
+    }
+
+    /// Applies a saved profile. Persistence and side effects run explicitly
+    /// here — the onChange handlers on the backend-specific controls cannot be
+    /// relied on: when the profile switches the backend, those controls are
+    /// not in the view hierarchy yet, never observe the change, and would
+    /// leave Preferences stale and the key field holding the previous
+    /// endpoint's credential. (When the controls do exist, their onChange
+    /// re-runs the same work — idempotent.)
+    private func apply(_ profile: BackendProfile) {
+        backend = profile.backend
+        openAIBaseURL = profile.openAIBaseURL
+        openAIModel = profile.openAIModel
+        claudeModel = profile.claudeModel
+
+        Preferences.translationBackend = profile.backend
+        Preferences.openAIBaseURL = profile.openAIBaseURL
+        Preferences.openAIModel = profile.openAIModel
+        Preferences.claudeModel = profile.claudeModel
+        openAIKey = OpenAICompatSession.apiKey(forBaseURL: profile.openAIBaseURL) ?? ""
+        modelFetchID += 1
+        fetchedModels = []
+        modelFetchError = nil
+        fetchingModels = false
     }
 
     private func fetchModels() {
@@ -477,6 +582,189 @@ struct SettingsView: View {
         if panel.runModal() == .OK, let url = panel.url {
             TranscriptStore.setDirectory(url)
             directoryPath = url.path
+        }
+    }
+}
+
+/// Sheet-editing context: which profile is being edited (nil originalName =
+/// adding a new one) and the draft it starts from.
+struct ProfileEditorContext: Identifiable {
+    let originalName: String?
+    var profile: BackendProfile
+    var id: String { originalName ?? "__new__" }
+}
+
+/// Modal editor for one backend profile. Owns its own draft state so nothing
+/// touches the saved profiles (or the live settings) until 保存.
+private struct ProfileEditorSheet: View {
+    @State private var draft: BackendProfile
+    private let isNew: Bool
+    private let onSave: (BackendProfile) -> Void
+    private let onDelete: (() -> Void)?
+    private let onCancel: () -> Void
+
+    @State private var fetchedModels: [String] = []
+    @State private var fetchingModels = false
+    @State private var modelFetchError: String?
+    /// Only the newest fetch may touch the states above (same request-ID
+    /// pattern as the main settings view): bumped by every fetch and by
+    /// endpoint edits, so a late response can neither install a stale list
+    /// nor strand the loading spinner.
+    @State private var modelFetchID = 0
+    // Convenience field only: the key is written to the Keychain for the
+    // profile's endpoint on save, never stored inside the profile record
+    // (profiles live in UserDefaults, which is plain text).
+    @State private var apiKey = ""
+
+    init(
+        context: ProfileEditorContext,
+        onSave: @escaping (BackendProfile) -> Void,
+        onDelete: (() -> Void)?,
+        onCancel: @escaping () -> Void
+    ) {
+        _draft = State(initialValue: context.profile)
+        self.isNew = context.originalName == nil
+        self.onSave = onSave
+        self.onDelete = onDelete
+        self.onCancel = onCancel
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(isNew ? L("settings.profiles.addTitle") : L("settings.profiles.editTitle"))
+                .font(.headline)
+
+            LabeledContent(L("settings.profiles.name")) {
+                TextField("", text: $draft.name)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 220)
+            }
+            Picker(L("settings.backend"), selection: $draft.backend) {
+                Text(L("settings.backend.claude")).tag("claude")
+                Text(L("settings.backend.openai")).tag("openai")
+            }
+            if draft.backend == "openai" {
+                LabeledContent(L("settings.openaiBaseURL")) {
+                    TextField("", text: $draft.openAIBaseURL, prompt: Text(verbatim: "https://api.openai.com"))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 220)
+                        .autocorrectionDisabled()
+                }
+                LabeledContent(L("settings.openaiModel")) {
+                    HStack {
+                        TextField("", text: $draft.openAIModel)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 160)
+                            .autocorrectionDisabled()
+                        if fetchingModels {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else if fetchedModels.isEmpty {
+                            Button(L("settings.openaiModelsFetch")) { fetchModels() }
+                                .controlSize(.small)
+                        } else {
+                            Menu(L("settings.openaiModelsPick")) {
+                                ForEach(fetchedModels, id: \.self) { id in
+                                    Button(id) { draft.openAIModel = id }
+                                }
+                                Divider()
+                                Button(L("settings.openaiModelsRefresh")) { fetchModels() }
+                            }
+                            .controlSize(.small)
+                            .fixedSize()
+                        }
+                    }
+                }
+                if let modelFetchError {
+                    Text(LF("settings.openaiModelsError", modelFetchError))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                }
+                LabeledContent(L("settings.openaiKey")) {
+                    SecureField("", text: $apiKey)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 220)
+                }
+                Text(L("settings.profiles.keyCaption"))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            } else {
+                LabeledContent(L("settings.claudeModel")) {
+                    TextField("", text: $draft.claudeModel, prompt: Text(verbatim: "claude-sonnet-5"))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 220)
+                        .autocorrectionDisabled()
+                }
+            }
+
+            HStack {
+                if let onDelete {
+                    Button(role: .destructive, action: onDelete) {
+                        Text(L("settings.profiles.delete"))
+                    }
+                }
+                Spacer()
+                Button(L("settings.cancel"), action: onCancel)
+                    .keyboardShortcut(.cancelAction)
+                Button(L("settings.profiles.save")) {
+                    var profile = draft
+                    profile.name = profile.name.trimmingCharacters(in: .whitespaces)
+                    if profile.backend == "openai" {
+                        OpenAICompatSession.setAPIKey(apiKey, forBaseURL: profile.openAIBaseURL)
+                    }
+                    onSave(profile)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(draft.name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+        .task {
+            apiKey = OpenAICompatSession.apiKey(forBaseURL: draft.openAIBaseURL) ?? ""
+        }
+        .onChange(of: draft.openAIBaseURL) {
+            // Keys are per endpoint: editing the URL switches the field to the
+            // key stored for the new endpoint. The fetched model list belongs
+            // to the old endpoint — invalidate it (and any in-flight fetch)
+            // so the fetch button comes back and a late response is dropped.
+            apiKey = OpenAICompatSession.apiKey(forBaseURL: draft.openAIBaseURL) ?? ""
+            modelFetchID += 1
+            fetchedModels = []
+            modelFetchError = nil
+            fetchingModels = false
+        }
+        .onChange(of: apiKey) {
+            // The model list depends on the credential as much as the endpoint
+            // (accounts/projects expose different models): invalidate any
+            // fetched or in-flight list when the key changes.
+            modelFetchID += 1
+            fetchedModels = []
+            modelFetchError = nil
+            fetchingModels = false
+        }
+    }
+
+    private func fetchModels() {
+        modelFetchID += 1
+        let requestID = modelFetchID
+        fetchingModels = true
+        modelFetchError = nil
+        let baseURL = draft.openAIBaseURL
+        // Use the key as currently typed in the editor — the Keychain copy is
+        // only written on save, so reading it back here would fetch with a
+        // missing or outdated credential for a new endpoint or a changed key.
+        let key = apiKey
+        Task { @MainActor in
+            do {
+                let models = try await OpenAICompatSession.listModels(baseURL: baseURL, apiKey: key)
+                guard requestID == modelFetchID else { return }
+                fetchedModels = models
+            } catch {
+                guard requestID == modelFetchID else { return }
+                modelFetchError = String(describing: error)
+            }
+            fetchingModels = false
         }
     }
 }

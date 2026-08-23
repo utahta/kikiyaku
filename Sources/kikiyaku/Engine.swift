@@ -38,6 +38,7 @@ final class Engine {
     private var claudeFeed: AsyncStream<(UUID, String)>.Continuation?
     private var provisionalTask: Task<Void, Never>?
     private var provisionalFeed: AsyncStream<ProvisionalRequest>.Continuation?
+    private var provisionalWork: ProvisionalWorkBox?
     /// Latest issued provisional revision. A result is applied only while it is
     /// still the newest revision; bumping this invalidates whatever is in
     /// flight (used by requests, clears, and boundary retractions alike).
@@ -338,6 +339,7 @@ final class Engine {
             await provisionalTask.value
         }
         provisionalTask = nil
+        provisionalWork = nil
         // Closing the input stream alone sometimes does not close results
         // (observed on macOS 26.6), so call finalization explicitly.
         if let analyzer {
@@ -385,6 +387,7 @@ final class Engine {
                             // utterance cannot attach to the next one.
                             await MainActor.run {
                                 AppState.shared.discardPendingUtterance()
+                                Engine.shared.cancelInFlightProvisional()
                             }
                             continue
                         }
@@ -414,6 +417,10 @@ final class Engine {
                             )
                             AppState.shared.appendFinal(utterance)
                             Engine.shared.noteActivity()
+                            // The utterance ended: abort any provisional still
+                            // on the wire so it stops competing with the final
+                            // translation that is queued right after this.
+                            Engine.shared.cancelInFlightProvisional()
                             return utterance
                         }
                         if !utterance.translationSkipped {
@@ -590,6 +597,16 @@ final class Engine {
     func invalidateProvisional() {
         provisionalSequence += 1
         AppState.shared.provisionalText = ""
+        cancelInFlightProvisional()
+    }
+
+    /// Aborts the provisional request currently on the wire, if any. Called the
+    /// moment its result becomes unwanted — the utterance finalized, or its
+    /// boundaries were retracted — so the doomed request stops occupying the
+    /// LLM server while the final translation runs (on a serial or busy local
+    /// server it would otherwise delay the translation the user is waiting for).
+    func cancelInFlightProvisional() {
+        provisionalWork?.cancelCurrent()
     }
 
     /// A revision retracted every sentence boundary: clear the provisional
@@ -597,6 +614,7 @@ final class Engine {
     /// describes a split that no longer exists.
     private func clearProvisional(generation: Int) {
         provisionalSequence += 1
+        cancelInFlightProvisional()
         guard AppState.shared.provisionalGeneration == generation else { return }
         AppState.shared.provisionalText = ""
     }
@@ -611,14 +629,52 @@ final class Engine {
     /// supersedes them, and the main lane owns the error accounting
     /// (3-strike disable etc.).
     private func startProvisionalLane(box: LLMSessionBox) {
+        let workBox = ProvisionalWorkBox()
+        provisionalWork = workBox
         let (feed, continuation) = AsyncStream<ProvisionalRequest>.makeStream(
             bufferingPolicy: .bufferingNewest(1))
         provisionalFeed = continuation
         provisionalTask = Task.detached {
             for await request in feed {
                 guard let session = box.get() else { continue }
+                // Pre-flight check: a buffered request may already be stale —
+                // the utterance finalized or a newer revision superseded it
+                // while the previous one was on the wire. The post-response
+                // guard below prevents wrong display, but only checking BEFORE
+                // sending prevents a doomed request from occupying the server
+                // ahead of the final translation the user is waiting for.
+                let stillWanted = await MainActor.run {
+                    AppState.shared.provisionalGeneration == request.generation
+                        && Engine.shared.provisionalSequence == request.sequence
+                        && AppState.shared.translationReady
+                }
+                guard stillWanted else { continue }
+                // Run the request as a handle the engine can abort mid-flight
+                // (finalize / boundary retraction), bridging the lane's own
+                // cancellation (teardown) into it so stop still kills it too.
+                let work = Task { try await session.translateEphemeral(request.text) }
+                workBox.set(work)
+                defer { workBox.set(nil) }
+                // Close the race between the pre-flight check and the
+                // registration above: a finalize landing in that window called
+                // cancelCurrent() while nothing was registered yet. Re-verify
+                // now that the handle is in place, and cancel it ourselves if
+                // the request went stale in the gap. (A sticky "cancel the next
+                // registration" flag would be wrong instead — it could shoot
+                // down the next utterance's perfectly valid first request.)
+                let stillCurrent = await MainActor.run {
+                    AppState.shared.provisionalGeneration == request.generation
+                        && Engine.shared.provisionalSequence == request.sequence
+                }
+                if !stillCurrent {
+                    work.cancel()
+                }
                 do {
-                    let result = try await session.translateEphemeral(request.text)
+                    let result = try await withTaskCancellationHandler {
+                        try await work.value
+                    } onCancel: {
+                        work.cancel()
+                    }
                     await MainActor.run {
                         let state = AppState.shared
                         guard state.provisionalGeneration == request.generation,
@@ -627,9 +683,18 @@ final class Engine {
                         state.provisionalText = result
                     }
                 } catch {
-                    // Teardown cancels this lane outright; that is the normal
-                    // stop path, not a failure worth logging.
-                    if error is CancellationError { return }
+                    // Cancelling an in-flight HTTP request surfaces as
+                    // URLError(.cancelled), not necessarily CancellationError —
+                    // both are the intended abort, not a failure to log.
+                    let isCancellation = error is CancellationError
+                        || (error as? URLError)?.code == .cancelled
+                    if isCancellation {
+                        // Lane teardown ends the loop; a per-request abort
+                        // (the utterance finalized while this was on the wire)
+                        // just moves on to the next trigger.
+                        if Task.isCancelled { return }
+                        continue
+                    }
                     NSLog("kikiyaku: provisional translate failed: %@", String(describing: error))
                 }
             }
