@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>kikiyaku</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.utahta.kikiyaku</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>ja</string>
+		<string>en</string>
+	</array>
+	<key>CFBundleName</key>
+	<string>Kikiyaku</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>0.1.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Kikiyaku captures system audio to transcribe sound from other apps (such as remote participants in online meetings). It does not capture the screen.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Kikiyaku uses the local network to connect to a translation server (such as LM Studio) running on another device.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Kikiyaku uses the microphone to transcribe and translate meeting audio.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Kikiyaku transcribes meeting audio with on-device speech recognition. When translation is enabled, the recognized text is sent to the translation backend you selected (Anthropic, OpenAI, or a server you configure). The audio itself is never sent.</string>
+</dict>
+</plist>

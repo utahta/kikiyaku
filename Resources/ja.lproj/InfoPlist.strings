@@ -1,0 +1,5 @@
+/* Permission dialog descriptions (placed in the main bundle's lproj) */
+"NSMicrophoneUsageDescription" = "Kikiyaku はマイク入力から会議音声の文字起こしと翻訳を行うためにマイクを使用します。";
+"NSSpeechRecognitionUsageDescription" = "Kikiyaku はオンデバイスの音声認識で会議音声を文字起こしします。翻訳が有効な場合、認識されたテキストは選択した翻訳バックエンド（Anthropic、OpenAI、または設定した接続先のサーバー）に送信されます。音声そのものは送信されません。";
+"NSLocalNetworkUsageDescription" = "Kikiyaku はローカルで動作する翻訳サーバー（LM Studio など）に接続するためにローカルネットワークを使用します。";
+"NSAudioCaptureUsageDescription" = "Kikiyaku は他アプリの音声（オンライン会議の相手の声など）を文字起こしするために、システム音声を取得します。画面の映像は取得しません。";

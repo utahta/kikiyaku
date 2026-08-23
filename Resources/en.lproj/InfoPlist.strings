@@ -1,0 +1,5 @@
+/* Permission dialog descriptions (placed in the main bundle's lproj) */
+"NSMicrophoneUsageDescription" = "Kikiyaku uses the microphone to transcribe and translate meeting audio.";
+"NSSpeechRecognitionUsageDescription" = "Kikiyaku transcribes meeting audio with on-device speech recognition. When translation is enabled, the recognized text is sent to the translation backend you selected (Anthropic, OpenAI, or a server you configure). The audio itself is never sent.";
+"NSLocalNetworkUsageDescription" = "Kikiyaku uses the local network to connect to a translation server (such as LM Studio) running on another device.";
+"NSAudioCaptureUsageDescription" = "Kikiyaku captures system audio to transcribe sound from other apps (such as remote participants in online meetings). It does not capture the screen.";

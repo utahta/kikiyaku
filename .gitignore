@@ -1,0 +1,4 @@
+docs/ai
+.build/
+build/
+.DS_Store

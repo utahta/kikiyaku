@@ -1,0 +1,114 @@
+/* Menu */
+"menu.showPanel" = "Show Panel";
+"menu.openFolder" = "Open Save Folder";
+"menu.settings" = "Settings…";
+"menu.quit" = "Quit Kikiyaku";
+
+/* Windows */
+"settingsWindow.title" = "Kikiyaku Settings";
+
+/* Quit confirmation */
+"alert.unsaved.title" = "Failed to Save the Transcript";
+"alert.unsaved.message" = "If you quit now, this session's transcript will be lost. Cancel and check the save destination, or discard it and quit.";
+"alert.unsaved.cancel" = "Cancel";
+"alert.unsaved.discard" = "Quit Without Saving";
+
+/* Panel */
+"panel.start" = "Start";
+"panel.stop" = "Stop";
+"panel.skippedConfidence" = "Translation skipped (confidence %@)";
+"panel.provisionalKept" = "Provisional (final translation failed)";
+
+/* Status */
+"status.idle" = "Idle";
+"status.preparing" = "Preparing…";
+"status.downloadingModel" = "Downloading speech model… (first run only)";
+"status.recognizing" = "Listening (%1$@, %2$@ → %3$@)";
+"status.recognizingNoTranslation" = "Listening (%1$@, %2$@, no translation)";
+"status.recognizingClaudeMissing" = "Listening (claude CLI not found — no translation. You can set claudePath in defaults)";
+"status.startFailed" = "Failed to start: %@";
+"status.startAbortedUnsaved" = "Start aborted: the previous transcript is unsaved (check the save destination: %@)";
+"status.saved" = "Saved (%@)";
+"status.saveRetryFailed" = "Saving failed again: %@ (check the save destination)";
+"status.stopSaved" = "Stopped (saved: %@)";
+"status.stop" = "Stopped";
+"status.stopSaveFailed" = "Stopped (saving failed: %@ — the transcript is kept in memory)";
+"status.autoStopSuffix" = " (auto-stopped after %d min of silence)";
+"status.outputDeviceChangedSuffix" = " (auto-stopped: the audio output device changed — press Start again)";
+"source.mic" = "microphone";
+"source.system" = "system audio";
+"status.recognitionErrorSuffix" = " (auto-stopped on recognition error: %@)";
+"status.llmStoppedNone" = "%@ translation stopped (repeated failures). Continuing without translation for this session";
+
+/* Translations */
+"translation.failed" = "[translation failed]";
+
+/* Errors */
+"error.noFormat" = "No compatible audio format for speech recognition";
+"error.converter" = "Could not create the microphone audio converter";
+"error.micDenied" = "Microphone access is not allowed";
+"error.speechDenied" = "Speech recognition is not allowed (enable it in System Settings > Privacy & Security > Speech Recognition)";
+
+/* Settings */
+"settings.language" = "Display language";
+"settings.language.system" = "Follow System";
+"settings.languageRestartCaption" = "Takes effect after relaunching the app.";
+"settings.relaunch" = "Relaunch Now";
+"settings.audioSource" = "Audio input";
+"settings.audioSource.mic" = "Microphone";
+"settings.audioSource.system" = "System audio (other apps)";
+"settings.audioSourceCaption" = "System audio transcribes what your Mac is playing — such as remote participants in an online meeting (your own voice is not captured). The first use asks for system audio recording permission. Takes effect from the next Start.";
+"settings.sourceLanguage" = "Source language (speech)";
+"settings.targetLanguage" = "Target language";
+"settings.languageCaption" = "Language changes take effect from the next Start.";
+"settings.translation" = "Translation";
+"settings.translationCaption" = "When on, finalized utterances are translated by the selected backend. When off, kikiyaku only transcribes (useful for minute-taking or saving quota). Takes effect from the next Start.";
+"settings.backend" = "Translation backend";
+"settings.backend.claude" = "Claude (CLI)";
+"settings.backend.openai" = "OpenAI-compatible (API / local)";
+"settings.provisional" = "Provisional translation per sentence";
+"settings.provisionalCaption" = "While a long utterance is still in progress, translates the recognized part each time a sentence boundary is detected and shows it in a pale style below the live text (replaced by the final translation when the utterance finalizes). Available with the OpenAI-compatible backend only. Takes effect from the next Start.";
+"settings.openaiBaseURL" = "Endpoint URL";
+"settings.openaiModel" = "Model name";
+"settings.openaiKey" = "API key";
+"settings.openaiModelsFetch" = "Fetch models";
+"settings.openaiModelsPick" = "Choose";
+"settings.openaiModelsRefresh" = "Refresh";
+"settings.openaiModelsError" = "Failed to fetch the model list: %@";
+"settings.openaiCaption" = "Connects to cloud OpenAI (https://api.openai.com, key required) or local servers such as LM Studio and llama.cpp (e.g. http://localhost:1234, no key needed). Keys are stored in the Keychain per endpoint and are only ever sent to that endpoint. For local Qwen models, prepending /no_think to the system prompt speeds things up. Takes effect from the next Start.";
+"settings.claudePath" = "claude CLI path";
+"settings.claudePathPlaceholder" = "Auto-detect";
+"settings.claudePathDetect" = "Auto-detect";
+"settings.claudePathDetected" = "Resolved: %@";
+"settings.claudePathMissing" = "claude CLI not found (check the path, or press Auto-detect)";
+"settings.claudePathCaption" = "The detected path is filled in automatically. Edit it to use a custom path, or press Auto-detect to restore the detected one. Takes effect from the next Start.";
+"settings.claudeModel" = "Claude model";
+"settings.model.sonnet" = "Sonnet 5 (default, balanced)";
+"settings.model.opus" = "Opus 5 (best quality)";
+"settings.model.haiku" = "Haiku 4.5 (lowest cost)";
+"settings.modelCaption" = "Latency is similar across all three (about 2–3 s per utterance). Opus is best at recovering mis-recognitions; Haiku uses the least quota. Takes effect from the next Start.";
+"settings.systemPrompt" = "System prompt";
+"settings.resetDefault" = "Reset to Default";
+"settings.promptCaption" = "{source} and {target} are replaced with the English names of the selected languages (e.g. English (United States)). Keep the convention that utterances arrive wrapped in <u>...</u> tags (without it, the model replies conversationally instead of translating). Takes effect from the next Start.";
+"settings.newestOnTop" = "Show newest utterances on top";
+"settings.newestOnTopCaption" = "On: in-progress text is pinned in a fixed area at the top and finalized utterances are listed newest first (your eyes stay in one place). Off: appended at the bottom, following the bottom edge. Takes effect immediately, so you can compare while running.";
+"settings.liveLines" = "Live area lines";
+"settings.liveLinesValue" = "%d lines";
+"settings.fontSize" = "Font size";
+"settings.fontSizeCaption" = "Font size of translations. Takes effect immediately.";
+"settings.sourceText" = "Show source text (recognition)";
+"settings.sourceFontSize" = "Source text size";
+"settings.sourceTextCaption" = "Turning this off gives a translations-only panel (the spinner still shows while recognition is running). Takes effect immediately.";
+"settings.opacity" = "Panel opacity";
+"settings.opacityCaption" = "Controls how translucent the panel background is. Text (transcripts and translations) always stays fully opaque. Takes effect immediately.";
+"settings.threshold" = "Skip-translation threshold";
+"settings.off" = "Off";
+"settings.thresholdCaption" = "Utterances whose mean recognition confidence is below this value are not translated. This filters out mis-recognitions of other languages (e.g. side chatter in the room). Takes effect immediately. Confidence is also recorded in the saved JSONL, so you can tune it with real data.";
+"settings.autoStop" = "Auto-stop";
+"settings.autoStopValue" = "Stop after %d min of silence";
+"settings.autoStopCaption" = "Automatically stops and saves when no recognition output arrives for this long (protects against forgetting to stop). 0 disables it. Takes effect immediately.";
+"settings.saveDir" = "Save destination";
+"settings.change" = "Change…";
+"settings.saveDirCaption" = "On Stop, the session's utterances are saved as JSONL (one line per utterance).";
+"settings.choosePrompt" = "Choose";
+"settings.chooseMessage" = "Choose a folder to save transcripts";
