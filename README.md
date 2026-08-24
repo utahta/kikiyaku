@@ -10,8 +10,12 @@ said as it is recognized, and fills in a translation a second later.
 ## Features
 
 - **On-device speech recognition** — Apple SpeechAnalyzer / SpeechTranscriber
-  (macOS 26+). Audio never leaves your Mac. Live in-progress text is shown
-  while a sentence is still being spoken.
+  (macOS 26+). Recognition runs on-device and audio never leaves your Mac
+  (an Internet connection may be required once to download the selected
+  language's recognition model). Translation is a separate, explicit choice:
+  a local LLM keeps everything on your machine, a remote backend receives the
+  recognized text only (see [Privacy](#privacy)). Live in-progress text is
+  shown while a sentence is still being spoken.
 - **Pluggable LLM translation backends**
   - **Claude CLI** — drives a persistent `claude` process using your existing
     Claude subscription. Launched in an isolated, minimal configuration
@@ -122,12 +126,26 @@ Tips for real-time performance with local models:
 
 ## Privacy
 
-- Speech recognition runs entirely on-device.
-- With translation enabled, the recognized **text** is sent to the backend you
-  configured — Anthropic (Claude CLI), OpenAI, or your own server. Audio is
-  never sent anywhere.
-- With a local backend, nothing leaves your machine.
+Speech recognition always runs on-device; audio is never sent anywhere.
+(Downloading a language's recognition model on first use is the one network
+access recognition itself may need.) What leaves your machine beyond that
+depends only on the translation backend you configure:
+
+| Backend | Audio | Recognized text |
+|---|---|---|
+| None (transcription only) | never sent | never sent |
+| OpenAI-compatible — local server (LM Studio etc.) | never sent | stays on your machine / LAN |
+| OpenAI-compatible — remote endpoint (OpenAI cloud, or any URL you configure) | never sent | sent to that endpoint, together with recent conversation history |
+| Claude CLI | never sent | sent to Anthropic, together with the session's conversation history |
+
+- The OpenAI-compatible backend sends text to exactly the URL you configure —
+  the destination is determined entirely by that setting.
+- Translation requests include recent conversation history (recognized text
+  and translations from the session) as context, not just the current
+  utterance.
 - Transcripts are only written to the local save directory you configure.
+- API keys are stored in the macOS Keychain, per endpoint, and are only ever
+  sent to that endpoint.
 
 ## License
 

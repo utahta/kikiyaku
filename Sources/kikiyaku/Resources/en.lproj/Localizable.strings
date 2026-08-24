@@ -60,6 +60,8 @@
 "settings.audioSourceCaption" = "System audio transcribes what your Mac is playing — such as remote participants in an online meeting (your own voice is not captured). The first use asks for system audio recording permission. Takes effect from the next Start.";
 "settings.sourceLanguage" = "Source language (speech)";
 "settings.targetLanguage" = "Target language";
+"settings.swapLanguages" = "⇄ Swap languages";
+"settings.swapUnsupportedCaption" = "The current target language is not supported by speech recognition, so the pair cannot be swapped.";
 "settings.languageCaption" = "Language changes take effect from the next Start.";
 "settings.translation" = "Translation";
 "settings.translationCaption" = "When on, finalized utterances are translated by the selected backend. When off, kikiyaku only transcribes (useful for minute-taking or saving quota). Takes effect from the next Start.";

@@ -43,6 +43,22 @@ struct SettingsView: View {
     @State private var panelOpacity = Preferences.panelOpacity
     @State private var sourceOptions: [LanguageOption] = []
     @State private var targetOptions: [LanguageOption] = []
+    /// The genuine SpeechTranscriber capability list, captured BEFORE the
+    /// display-only rescue entries are appended to sourceOptions (a stored but
+    /// unsupported locale gets appended there purely so the Picker can show
+    /// it — that is not proof the recognizer supports it).
+    @State private var supportedSourceIDs: Set<String> = []
+
+    /// Swapping puts the current target into the recognition slot, so it is
+    /// only allowed when that language is a SpeechTranscriber-supported locale
+    /// (the target list is broader — translation targets are LLM-arbitrary).
+    /// Checked against the raw capability set, NOT sourceOptions: the latter
+    /// contains display-only rescue entries for unsupported stored values.
+    /// Matching is by option ID; a false negative merely disables the button,
+    /// which is the safe direction.
+    private var swapPossible: Bool {
+        supportedSourceIDs.contains(targetID)
+    }
 
     private var claudeModelOptions: [String] {
         var options = ["claude-sonnet-5", "claude-opus-5", "claude-haiku-4-5-20251001"]
@@ -113,6 +129,25 @@ struct SettingsView: View {
                 .disabled(targetOptions.isEmpty)
                 .onChange(of: targetID) {
                     Preferences.targetLocaleID = targetID
+                }
+                Button(L("settings.swapLanguages")) {
+                    guard swapPossible else { return }
+                    let source = sourceID
+                    sourceID = targetID
+                    targetID = source
+                    // The target list (translation targets) is broader than the
+                    // source list; a swapped-in source not present there is fine
+                    // for the picker — the LLM can translate into any language.
+                    if !targetOptions.contains(where: { $0.id == targetID }) {
+                        targetOptions.append(Preferences.option(id: targetID))
+                    }
+                }
+                .controlSize(.small)
+                .disabled(!swapPossible)
+                if !swapPossible, !targetOptions.isEmpty {
+                    Text(L("settings.swapUnsupportedCaption"))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
                 Text(L("settings.languageCaption"))
                     .font(.caption)
@@ -479,6 +514,9 @@ struct SettingsView: View {
             openAIKey = OpenAICompatSession.apiKey(forBaseURL: Preferences.openAIBaseURL) ?? ""
             var sources = await Preferences.sourceOptions()
             var targets = await Preferences.targetOptions()
+            // Capture the genuine capability list before the display-only
+            // rescue entries below pollute it (the swap guard depends on it).
+            supportedSourceIDs = Set(sources.map(\.id))
             // If the stored value is missing from the candidates (written directly
             // via defaults, etc.), add the value itself so the Picker does not break.
             if !sources.contains(where: { $0.id == sourceID }) {

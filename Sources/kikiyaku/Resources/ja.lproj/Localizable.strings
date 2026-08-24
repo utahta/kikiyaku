@@ -60,6 +60,8 @@
 "settings.audioSourceCaption" = "システム音声を選ぶと、オンライン会議の相手の声など Mac が再生している音を文字起こしします（自分の声は入りません）。初回はシステム音声の録音の許可を求められます。次回の「開始」から反映されます。";
 "settings.sourceLanguage" = "翻訳元（音声）";
 "settings.targetLanguage" = "翻訳先";
+"settings.swapLanguages" = "⇄ 翻訳元と翻訳先を入れ替え";
+"settings.swapUnsupportedCaption" = "現在の翻訳先は音声認識が対応していない言語のため、入れ替えできません。";
 "settings.languageCaption" = "言語の変更は次回の「開始」から反映されます。";
 "settings.translation" = "翻訳";
 "settings.translationCaption" = "オンにすると、確定した発話を選択中のバックエンドが翻訳します。オフでは文字起こしのみを行います（議事録用途や利用枠の節約に）。次回の「開始」から反映されます。";
