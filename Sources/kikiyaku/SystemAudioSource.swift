@@ -22,7 +22,7 @@ struct CoreAudioError: Error, CustomStringConvertible {
 /// output on Macs without one.
 final class SystemAudioSource: AudioCaptureSource, @unchecked Sendable {
     private let analyzerFormat: AVAudioFormat
-    private let onChunk: @Sendable (AnalyzerInput) -> Void
+    private let onChunk: @Sendable (AnalyzerInput, UInt64) -> Void
     /// Called once when the default output device changes. The aggregate stays
     /// anchored to the device it was built on and goes silently dead, so the
     /// engine should stop the session instead of appearing to run while
@@ -38,7 +38,7 @@ final class SystemAudioSource: AudioCaptureSource, @unchecked Sendable {
     // calling back are not safe there.
     private let ioQueue = DispatchQueue(label: "kikiyaku.system-audio")
 
-    init(analyzerFormat: AVAudioFormat, onChunk: @escaping @Sendable (AnalyzerInput) -> Void) {
+    init(analyzerFormat: AVAudioFormat, onChunk: @escaping @Sendable (AnalyzerInput, UInt64) -> Void) {
         self.analyzerFormat = analyzerFormat
         self.onChunk = onChunk
     }
@@ -129,13 +129,16 @@ final class SystemAudioSource: AudioCaptureSource, @unchecked Sendable {
         let onChunk = self.onChunk
 
         var procID: AudioDeviceIOProcID?
-        status = AudioDeviceCreateIOProcIDWithBlock(&procID, aggregate, ioQueue) { _, inInputData, _, _, _ in
+        status = AudioDeviceCreateIOProcIDWithBlock(&procID, aggregate, ioQueue) { inNow, inInputData, inInputTime, _, _ in
             // The no-copy buffer aliases Core Audio's IO memory; the converter
             // reads it synchronously and writes into a fresh buffer, so no deep
             // copy is needed before handing it downstream.
             guard let aliased = AVAudioPCMBuffer(pcmFormat: tapFormat, bufferListNoCopy: inInputData),
                   let converted = box.convert(aliased) else { return }
-            onChunk(AnalyzerInput(buffer: converted))
+            let input = inInputTime.pointee
+            let hostTime = input.mFlags.contains(.hostTimeValid)
+                ? input.mHostTime : inNow.pointee.mHostTime
+            onChunk(AnalyzerInput(buffer: converted), hostTime)
         }
         guard status == noErr, let procID else { throw CoreAudioError(code: status, op: "CreateIOProc") }
         ioProcID = procID

@@ -51,10 +51,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // exact-equality check against .command.
             guard event.modifierFlags.intersection([.command, .shift, .control, .option]) == .command,
                   event.charactersIgnoringModifiers == "w" else { return event }
-            if let key = NSApp.keyWindow, key != Self.panel {
+            if let key = NSApp.keyWindow, key != Self.panel, key != Self.panel2 {
                 key.performClose(nil)
             } else {
+                // The panels never become key, so Cmd+W cannot tell them
+                // apart; hide both (the per-panel close button handles
+                // hiding just one).
                 Self.panel?.orderOut(nil)
+                Self.panel2?.orderOut(nil)
             }
             return nil
         }
@@ -227,6 +231,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     static func makePanel() {
         guard panel == nil else { return }
+        let p = buildPanel(role: .primary)
+        p.setFrameAutosaveName("kikiyaku.panel")
+        panel = p
+    }
+
+    /// The second window: the language-2 panel of a bidirectional session.
+    /// Created lazily on the first bidirectional start; hidden (not destroyed)
+    /// when a classic session takes over.
+    static private(set) var panel2: NSPanel?
+
+    private static func makePanel2() {
+        guard panel2 == nil else { return }
+        let p = buildPanel(role: .secondary)
+        // First appearance (no saved frame yet — or a saved frame no display
+        // covers anymore): sit beside the main panel so the two do not stack
+        // on the same spot. Placed blindly at "left of main", a main panel
+        // near the screen edge would push this one fully off-screen, which
+        // reads as "bidirectional mode only made one panel" — so prefer the
+        // left, fall back to the right, and clamp into the screen's visible
+        // frame (which also avoids the Dock and menu bar) as the last
+        // resort. The autosave takes over from then on.
+        let restored = p.setFrameUsingName("kikiyaku.panel2")
+        let onSomeScreen = NSScreen.screens.contains { $0.visibleFrame.intersects(p.frame) }
+        if !restored || !onSomeScreen, let main = panel {
+            let gap: CGFloat = 12
+            var origin = NSPoint(x: main.frame.minX - p.frame.width - gap, y: main.frame.minY)
+            if let visible = (main.screen ?? NSScreen.main)?.visibleFrame {
+                if origin.x < visible.minX {
+                    let rightX = main.frame.maxX + gap
+                    origin.x = rightX + p.frame.width <= visible.maxX
+                        ? rightX
+                        : max(visible.minX, min(origin.x, visible.maxX - p.frame.width))
+                }
+                origin.y = max(visible.minY, min(origin.y, visible.maxY - p.frame.height))
+            }
+            p.setFrameOrigin(origin)
+        }
+        p.setFrameAutosaveName("kikiyaku.panel2")
+        panel2 = p
+    }
+
+    private static func buildPanel(role: PanelRole) -> NSPanel {
         // .nonactivatingPanel: scrolling and other interactions never steal focus
         // from the meeting app.
         let p = NSPanel(
@@ -254,15 +300,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         p.isReleasedWhenClosed = false
         p.becomesKeyOnlyIfNeeded = true
         p.hidesOnDeactivate = false
-        p.contentView = FirstMouseHostingView(rootView: PanelView(state: AppState.shared))
-        p.setFrameAutosaveName("kikiyaku.panel")
+        p.contentView = FirstMouseHostingView(rootView: PanelView(state: AppState.shared, role: role))
         // The SwiftUI side owns the translucency: per-row plates carry the
         // configured opacity while the window itself stays fully transparent,
         // so background video shows through everywhere except behind text.
         p.isOpaque = false
         p.backgroundColor = .clear
         p.delegate = panelDelegate
-        panel = p
+        return p
     }
 
     // NSWindow.delegate is a weak reference, so the AppDelegate keeps it alive.
@@ -271,6 +316,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     static func showPanel() {
         makePanel()
         panel?.orderFrontRegardless()
+        // The second panel belongs to the current (bidirectional) history;
+        // re-show it together with the main one.
+        if AppState.shared.bidirectionalSession {
+            showSecondPanel()
+        }
+    }
+
+    /// Called by the engine when a bidirectional session starts.
+    static func showSecondPanel() {
+        makePanel2()
+        panel2?.orderFrontRegardless()
+    }
+
+    /// Called by the engine when a classic session starts (the second panel's
+    /// content no longer matches the history).
+    static func hideSecondPanel() {
+        panel2?.orderOut(nil)
+    }
+
+    /// Re-syncs the panel layout (one classic panel vs. two language panels)
+    /// with the configured mode, so the layout — and each panel's language
+    /// badge — is visible before any session starts. Called from the settings
+    /// screen whenever the mode or the language pair changes. The sync only
+    /// previews the configuration while nothing else binds the layout:
+    /// - not while a session runs, and not while one is starting (isStarting —
+    ///   the engine has already pinned the session's pair; re-labeling here
+    ///   would caption the running recognizers with the wrong languages),
+    /// - not while a finished session's history is still on display (its rows
+    ///   were produced under the old pair; re-labeling would e.g. mark
+    ///   Japanese translations as French and break the per-panel language
+    ///   filter — the next start clears the history and re-syncs).
+    /// The settings themselves change freely; they apply from the next start.
+    static func applyConfiguredLayout() {
+        let state = AppState.shared
+        guard !state.isRunning,
+              !Engine.shared.isStarting,
+              state.utterances.isEmpty else { return }
+        state.bidirectionalSession = Preferences.bidirectionalConfigured
+        state.pairLanguageIDs = [Preferences.sourceLocaleID, Preferences.targetLocaleID]
+        if state.bidirectionalSession {
+            showSecondPanel()
+        } else {
+            hideSecondPanel()
+        }
     }
 
     /// Helper process waiting to relaunch the app. Killed explicitly when the quit

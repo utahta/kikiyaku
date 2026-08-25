@@ -13,10 +13,14 @@ protocol AudioCaptureSource: Sendable {
 /// Captures the microphone, converts buffers to the analyzer's format, and hands
 /// AnalyzerInput to the callback. The tap callback runs on a Core Audio thread.
 /// @unchecked: start/stop are serialized by the engine (see AudioCaptureSource).
+///
+/// The callback also receives the buffer's mach hostTime so the engine can
+/// anchor this channel's audio timeline to the session-wide clock (each
+/// channel's analyzer keeps its own timeline; hostTime is the common ruler).
 final class MicSource: AudioCaptureSource, @unchecked Sendable {
     private let engine = AVAudioEngine()
 
-    init(analyzerFormat: AVAudioFormat, onChunk: @escaping @Sendable (AnalyzerInput) -> Void) throws {
+    init(analyzerFormat: AVAudioFormat, onChunk: @escaping @Sendable (AnalyzerInput, UInt64) -> Void) throws {
         let input = engine.inputNode
         let micFormat = input.outputFormat(forBus: 0)
         guard micFormat.sampleRate > 0,
@@ -24,9 +28,9 @@ final class MicSource: AudioCaptureSource, @unchecked Sendable {
             throw KikiyakuError.converterUnavailable
         }
         let box = ConverterBox(converter: converter, targetFormat: analyzerFormat)
-        input.installTap(onBus: 0, bufferSize: 4096, format: micFormat) { buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 4096, format: micFormat) { buffer, when in
             if let converted = box.convert(buffer) {
-                onChunk(AnalyzerInput(buffer: converted))
+                onChunk(AnalyzerInput(buffer: converted), when.hostTime)
             }
         }
     }

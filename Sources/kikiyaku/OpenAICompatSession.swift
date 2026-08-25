@@ -226,8 +226,11 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         self.sendReasoningEffort = (self.endpoint?.host() == "api.openai.com")
     }
 
-    func translate(_ text: String) async throws -> String {
-        let userMessage = ["role": "user", "content": "<u>\(text)</u>"]
+    func translate(_ text: String, sourceID: String, targetID: String) async throws -> String {
+        let userMessage = [
+            "role": "user",
+            "content": UtterancePayload.wrap(text, sourceID: sourceID, targetID: targetID),
+        ]
         let result = try await performChat(messages: contextMessages(appending: userMessage))
         // Record only after the response passed validation — appending first
         // would duplicate the same utterance's user message on retry and leave
@@ -242,8 +245,11 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     /// benefit from the meeting context without polluting it (the finalized
     /// version of the same sentences is recorded later by translate()).
     /// May run concurrently with translate().
-    func translateEphemeral(_ text: String) async throws -> String {
-        let userMessage = ["role": "user", "content": "<u>\(text)</u>"]
+    func translateEphemeral(_ text: String, sourceID: String, targetID: String) async throws -> String {
+        let userMessage = [
+            "role": "user",
+            "content": UtterancePayload.wrap(text, sourceID: sourceID, targetID: targetID),
+        ]
         return try await performChat(messages: contextMessages(appending: userMessage))
     }
 

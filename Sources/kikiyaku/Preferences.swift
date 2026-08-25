@@ -1,10 +1,32 @@
 import Foundation
 import Speech
-import Translation
 
 struct LanguageOption: Identifiable, Sendable {
     let id: String     // BCP-47 (e.g. "en-US")
     let label: String  // display name (e.g. "English (United States)")
+}
+
+/// What a session does: the single value the settings screen selects and a
+/// start pins down. Persisted as two orthogonal booleans (translationEnabled ×
+/// bidirectionalEnabled) so each axis stays individually writable through
+/// `defaults write`, but the app itself only ever reads and writes the pair
+/// through this type — a half-updated combination the menu never offers
+/// cannot be observed.
+enum SessionMode: String, Sendable {
+    /// Language 1 is recognized and translated into language 2.
+    case translate
+    /// Both languages are recognized; each utterance is translated into the
+    /// other language.
+    case bidirectional
+    /// Language 1 is recognized, without translation.
+    case transcribe
+    /// Both languages are recognized without translation (bilingual transcript).
+    case bilingual
+
+    /// The session translates, so the backend configuration is live.
+    var translates: Bool { self == .translate || self == .bidirectional }
+    /// Every channel recognizes both languages of the pair.
+    var isBidirectional: Bool { self == .bidirectional || self == .bilingual }
 }
 
 /// A named snapshot of the translation-backend configuration, e.g.
@@ -63,13 +85,62 @@ enum Preferences {
     private static let audioSourceKey = "audioSource"
 
     /// Audio input source: "mic" (default) / "system" (what other apps are
-    /// playing, captured with a Core Audio process tap — for online meetings).
+    /// playing, captured with a Core Audio process tap — for online meetings) /
+    /// "both" (both channels at once — e.g. your own voice plus the remote
+    /// participants of an online meeting).
     static var audioSource: String {
         get {
             let value = UserDefaults.standard.string(forKey: audioSourceKey) ?? "mic"
-            return ["mic", "system"].contains(value) ? value : "mic"
+            return ["mic", "system", "both"].contains(value) ? value : "mic"
         }
         set { UserDefaults.standard.set(newValue, forKey: audioSourceKey) }
+    }
+
+    private static let bidirectionalKey = "bidirectionalTranslation"
+
+    /// Bidirectional mode: recognize both languages of the pair on every
+    /// selected channel, adopt each finalized utterance by confidence, and
+    /// translate it into the other language. Off = classic one-direction mode.
+    static var bidirectionalEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: bidirectionalKey) }
+        set { UserDefaults.standard.set(newValue, forKey: bidirectionalKey) }
+    }
+
+    /// "language-script" key (script filled in via likely subtags, region
+    /// ignored). Examples: zh-CN → zh-Hans, zh-TW → zh-Hant, en-US / en-GB →
+    /// en-Latn. Two locales with the same key need no translation between them.
+    static func languageScriptKey(_ locale: Locale) -> String {
+        let maximal = Locale.Language(identifier: locale.language.maximalIdentifier)
+        let code = maximal.languageCode?.identifier ?? locale.identifier
+        let script = maximal.script?.identifier ?? ""
+        return "\(code)-\(script)"
+    }
+
+    /// The mode selection resolved the way a session start resolves it:
+    /// bidirectional only when the pair's languages actually differ
+    /// (script-aware) — with an identical pair the engine falls back to the
+    /// classic flow, and the panel layout follows suit.
+    static var bidirectionalConfigured: Bool {
+        sessionMode.isBidirectional
+            && languageScriptKey(sourceLocale) != languageScriptKey(targetLocale)
+    }
+
+    /// The mode the settings screen selects, read and written as one value
+    /// (see SessionMode). A start snapshots it once, before its first await,
+    /// so a mid-start change cannot mix the two stored flags.
+    static var sessionMode: SessionMode {
+        get {
+            switch (translationEnabled, bidirectionalEnabled) {
+            case (true, false): .translate
+            case (true, true): .bidirectional
+            case (false, false): .transcribe
+            case (false, true): .bilingual
+            }
+        }
+        set {
+            translationEnabled = newValue.translates
+            bidirectionalEnabled = newValue.isBidirectional
+        }
     }
 
     private static let claudePathKey = "claudePath"
@@ -277,14 +348,43 @@ enum Preferences {
         set { UserDefaults.standard.set(newValue, forKey: sourceTextVisibleKey) }
     }
 
+    /// Default confidence floor, and the value the bidirectional modes fall
+    /// back to when the filter is switched off (see confidenceFloor).
+    static let defaultConfidenceThreshold = 0.4
+
     /// Utterances whose mean recognition confidence falls below this value are not
     /// translated. 0 disables the filter.
     static var confidenceThreshold: Double {
         get {
-            guard UserDefaults.standard.object(forKey: confidenceKey) != nil else { return 0.4 }
+            guard UserDefaults.standard.object(forKey: confidenceKey) != nil else {
+                return defaultConfidenceThreshold
+            }
             return UserDefaults.standard.double(forKey: confidenceKey)
         }
         set { UserDefaults.standard.set(newValue, forKey: confidenceKey) }
+    }
+
+    /// The floor a session actually applies.
+    ///
+    /// In one-direction mode the floor only filters out mis-recognitions, so
+    /// switching it off is a legitimate choice. In the bidirectional modes it
+    /// *is* the language judgment: with no floor, every utterance is adopted
+    /// by both recognizers, producing a duplicate row and — with translation
+    /// on — a confident-looking translation of the wrong-language garbage,
+    /// every single time. Partial dedup narrows that but cannot stand in for
+    /// the floor: it acts only on a clear confidence gap, and not at all when
+    /// a confidence is missing. So "off" falls back to the default floor
+    /// there. A deliberate non-zero value is always respected — the settings
+    /// caption invites tuning it against the confidences recorded in the
+    /// JSONL, and overriding that would break the invitation.
+    ///
+    /// Enforced here rather than only in the settings UI, so a value carried
+    /// over from an older install or written with `defaults write` cannot
+    /// disable the language judgment either.
+    static func confidenceFloor(bidirectional: Bool) -> Double {
+        let configured = confidenceThreshold
+        if bidirectional && configured <= 0 { return defaultConfidenceThreshold }
+        return configured
     }
 
     static var sourceLocaleID: String {
@@ -300,44 +400,18 @@ enum Preferences {
     static var sourceLocale: Locale { Locale(identifier: sourceLocaleID) }
     static var targetLocale: Locale { Locale(identifier: targetLocaleID) }
 
-    /// Source-language candidates: every locale SpeechTranscriber supports.
-    static func sourceOptions() async -> [LanguageOption] {
+    /// Candidates for both languages of the pair: every locale SpeechTranscriber
+    /// supports. The lists are deliberately identical (one source of truth): in
+    /// bidirectional mode language 2 is recognized too, so it must be a
+    /// SpeechTranscriber locale — and the LLM can translate into any language
+    /// anyway, so the former Translation-framework-based target list had no
+    /// real constraint to offer. Keeping the lists unified also avoids the
+    /// "switching modes invalidated my selected language" inconsistency.
+    static func languageOptions() async -> [LanguageOption] {
         let supported = await SpeechTranscriber.supportedLocales
         return supported
             .map { option(id: $0.identifier(.bcp47)) }
             .sorted { $0.id < $1.id }
-    }
-
-    /// Target-language candidates: every language this machine's Translation
-    /// framework supports. (The Apple translation engine itself was removed; the
-    /// Translation framework is used only as the source of the target-language
-    /// list.)
-    /// IDs are normalized to "language-region" form, keeping the script only when
-    /// dropping it would change the language. The test compares likely-subtags
-    /// expansions (maximalIdentifier):
-    ///   - ja(-Jpan)-JP → matches ja-JP's expansion → script unneeded → "ja-JP"
-    ///   - zh-Hant-TW  → matches zh-TW's expansion → script unneeded → "zh-TW"
-    ///   - zh-Hans-HK  → differs from zh-HK's expansion (Hant) → script needed →
-    ///     "zh-Hans-HK"
-    /// `Locale.Language.script` cannot distinguish an explicit script from
-    /// Foundation's inference, so a script != nil condition would produce ghost
-    /// candidates like "ja-Jpan".
-    static func targetOptions() async -> [LanguageOption] {
-        let supported = await LanguageAvailability().supportedLanguages
-        let ids = Set(supported.compactMap { lang -> String? in
-            guard let code = lang.languageCode?.identifier else { return nil }
-            let region = lang.region?.identifier
-            var base = code
-            if let region {
-                base += "-\(region)"
-            }
-            if let script = lang.script?.identifier,
-               Locale.Language(identifier: base).maximalIdentifier != lang.maximalIdentifier {
-                base = region == nil ? "\(code)-\(script)" : "\(code)-\(script)-\(region!)"
-            }
-            return base
-        })
-        return ids.map { option(id: $0) }.sorted { $0.id < $1.id }
     }
 
     static func option(id: String) -> LanguageOption {

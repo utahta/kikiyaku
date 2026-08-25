@@ -4,6 +4,7 @@ import SwiftUI
 struct SettingsView: View {
     @State private var directoryPath = TranscriptStore.directory.path
     @State private var audioSource = Preferences.audioSource
+    @State private var sessionMode = Preferences.sessionMode
     @State private var sourceID = Preferences.sourceLocaleID
     @State private var targetID = Preferences.targetLocaleID
     @State private var confidenceThreshold = Preferences.confidenceThreshold
@@ -12,7 +13,11 @@ struct SettingsView: View {
     @State private var sourceTextVisible = Preferences.sourceTextVisible
     @State private var newestOnTop = Preferences.newestOnTop
     @State private var liveLines = Preferences.liveLines
-    @State private var translationEnabled = Preferences.translationEnabled
+    /// Whether the selected mode translates at all — the modes with translation
+    /// off leave the whole backend configuration inert, so its controls dim.
+    private var translationActive: Bool {
+        sessionMode.translates
+    }
     @State private var backend = Preferences.translationBackend
     @State private var profiles = Preferences.backendProfiles
     @State private var profileEditor: ProfileEditorContext?
@@ -104,6 +109,7 @@ struct SettingsView: View {
                 Picker(L("settings.audioSource"), selection: $audioSource) {
                     Text(L("settings.audioSource.mic")).tag("mic")
                     Text(L("settings.audioSource.system")).tag("system")
+                    Text(L("settings.audioSource.both")).tag("both")
                 }
                 .onChange(of: audioSource) {
                     Preferences.audioSource = audioSource
@@ -120,6 +126,7 @@ struct SettingsView: View {
                 .disabled(sourceOptions.isEmpty)
                 .onChange(of: sourceID) {
                     Preferences.sourceLocaleID = sourceID
+                    AppDelegate.applyConfiguredLayout()
                 }
                 Picker(L("settings.targetLanguage"), selection: $targetID) {
                     ForEach(targetOptions) { option in
@@ -129,15 +136,16 @@ struct SettingsView: View {
                 .disabled(targetOptions.isEmpty)
                 .onChange(of: targetID) {
                     Preferences.targetLocaleID = targetID
+                    AppDelegate.applyConfiguredLayout()
                 }
                 Button(L("settings.swapLanguages")) {
                     guard swapPossible else { return }
                     let source = sourceID
                     sourceID = targetID
                     targetID = source
-                    // The target list (translation targets) is broader than the
-                    // source list; a swapped-in source not present there is fine
-                    // for the picker — the LLM can translate into any language.
+                    // The lists are unified now, but a rescue entry (a stored
+                    // language the recognizer does not support) can still land
+                    // in the language-2 slot; keep the picker from breaking.
                     if !targetOptions.contains(where: { $0.id == targetID }) {
                         targetOptions.append(Preferences.option(id: targetID))
                     }
@@ -155,11 +163,17 @@ struct SettingsView: View {
 
                 Divider()
 
-                Toggle(L("settings.translation"), isOn: $translationEnabled)
-                    .onChange(of: translationEnabled) {
-                        Preferences.translationEnabled = translationEnabled
-                    }
-                Text(L("settings.translationCaption"))
+                Picker(L("settings.mode"), selection: $sessionMode) {
+                    Text(L("settings.mode.translate")).tag(SessionMode.translate)
+                    Text(L("settings.mode.bidirectional")).tag(SessionMode.bidirectional)
+                    Text(L("settings.mode.transcribe")).tag(SessionMode.transcribe)
+                    Text(L("settings.mode.bilingual")).tag(SessionMode.bilingual)
+                }
+                .onChange(of: sessionMode) {
+                    Preferences.sessionMode = sessionMode
+                    AppDelegate.applyConfiguredLayout()
+                }
+                Text(L("settings.modeCaption"))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
 
@@ -201,7 +215,7 @@ struct SettingsView: View {
                         .controlSize(.small)
                     }
                 }
-                .disabled(!translationEnabled)
+                .disabled(!translationActive)
                 Text(L("settings.profilesCaption"))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
@@ -211,7 +225,7 @@ struct SettingsView: View {
                     Text(L("settings.backend.claude")).tag("claude")
                     Text(L("settings.backend.openai")).tag("openai")
                 }
-                .disabled(!translationEnabled)
+                .disabled(!translationActive)
                 .onChange(of: backend) {
                     Preferences.translationBackend = backend
                 }
@@ -223,7 +237,7 @@ struct SettingsView: View {
                             .frame(width: 260)
                             .autocorrectionDisabled()
                     }
-                    .disabled(!translationEnabled)
+                    .disabled(!translationActive)
                     .onChange(of: openAIBaseURL) {
                         Preferences.openAIBaseURL = openAIBaseURL
                         // Keys are stored per host, so when the endpoint changes,
@@ -260,7 +274,7 @@ struct SettingsView: View {
                             }
                         }
                     }
-                    .disabled(!translationEnabled)
+                    .disabled(!translationActive)
                     .onChange(of: openAIModel) {
                         Preferences.openAIModel = openAIModel
                     }
@@ -274,7 +288,7 @@ struct SettingsView: View {
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 260)
                     }
-                    .disabled(!translationEnabled)
+                    .disabled(!translationActive)
                     .onChange(of: openAIKey) {
                         OpenAICompatSession.setAPIKey(openAIKey, forBaseURL: openAIBaseURL)
                         // The model list depends on the credentials too (plans
@@ -290,7 +304,7 @@ struct SettingsView: View {
                         .foregroundStyle(.tertiary)
 
                     Toggle(L("settings.provisional"), isOn: $provisionalEnabled)
-                        .disabled(!translationEnabled)
+                        .disabled(!translationActive)
                         .onChange(of: provisionalEnabled) {
                             Preferences.provisionalTranslationEnabled = provisionalEnabled
                         }
@@ -313,7 +327,7 @@ struct SettingsView: View {
                             .disabled(ClaudeBinary.detect() == nil)
                         }
                     }
-                    .disabled(!translationEnabled)
+                    .disabled(!translationActive)
                     .onChange(of: claudePath) {
                         // A value equal to the detection result is not stored ("auto-follow":
                         // it keeps tracking even if the install location changes later).
@@ -334,7 +348,7 @@ struct SettingsView: View {
                             Text(claudeModelLabel(id)).tag(id)
                         }
                     }
-                    .disabled(!translationEnabled)
+                    .disabled(!translationActive)
                     .onChange(of: claudeModel) {
                         Preferences.claudeModel = claudeModel
                     }
@@ -357,7 +371,7 @@ struct SettingsView: View {
                         .disabled(promptTemplate == ClaudeSession.defaultPromptTemplate)
                     }
                 }
-                .disabled(!translationEnabled)  // the prompt is shared by both backends
+                .disabled(!translationActive)  // the prompt is shared by both backends
                 .onChange(of: promptTemplate) {
                     Preferences.claudePromptOverride =
                         promptTemplate == ClaudeSession.defaultPromptTemplate ? nil : promptTemplate
@@ -460,6 +474,15 @@ struct SettingsView: View {
                 .onChange(of: confidenceThreshold) {
                     Preferences.confidenceThreshold = confidenceThreshold
                 }
+                // "Off" cannot disable the language judgment the bidirectional
+                // modes run on, so say which value takes its place instead of
+                // letting the slider read Off while something else applies.
+                if sessionMode.isBidirectional, confidenceThreshold == 0 {
+                    Text(LF("settings.thresholdBidirectionalFloor",
+                            String(format: "%.2f", Preferences.defaultConfidenceThreshold)))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Text(L("settings.thresholdCaption"))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
@@ -512,13 +535,18 @@ struct SettingsView: View {
             // re-saves the identical value, which is harmless (same pattern as
             // the endpoint-change reload).
             openAIKey = OpenAICompatSession.apiKey(forBaseURL: Preferences.openAIBaseURL) ?? ""
-            var sources = await Preferences.sourceOptions()
-            var targets = await Preferences.targetOptions()
+            // Both pickers share the one unified candidate list (every
+            // SpeechTranscriber locale); only the rescue entries differ.
+            let options = await Preferences.languageOptions()
+            var sources = options
+            var targets = options
             // Capture the genuine capability list before the display-only
             // rescue entries below pollute it (the swap guard depends on it).
-            supportedSourceIDs = Set(sources.map(\.id))
+            supportedSourceIDs = Set(options.map(\.id))
             // If the stored value is missing from the candidates (written directly
-            // via defaults, etc.), add the value itself so the Picker does not break.
+            // via defaults, or a target saved back when the list was still
+            // Translation-framework-based), add the value itself so the Picker
+            // does not break.
             if !sources.contains(where: { $0.id == sourceID }) {
                 sources.append(Preferences.option(id: sourceID))
             }

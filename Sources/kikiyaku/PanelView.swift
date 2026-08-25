@@ -1,13 +1,66 @@
 import SwiftUI
 
+/// Which window a PanelView instance lives in. The primary panel is the
+/// classic single panel — and doubles as the language-1 panel during a
+/// bidirectional session; the secondary window exists only for language 2.
+enum PanelRole {
+    case primary
+    case secondary
+}
+
 struct PanelView: View {
     var state: AppState
+    var role: PanelRole = .primary
+
+    /// Non-nil while the history belongs to a bidirectional session: the
+    /// language this panel renders. nil = classic rendering.
+    private var panelLanguage: String? {
+        guard state.bidirectionalSession else { return nil }
+        let ids = state.pairLanguageIDs
+        switch role {
+        case .primary: return ids.first
+        case .secondary: return ids.count > 1 ? ids[1] : nil
+        }
+    }
+
+    /// Short display name ("日本語" / "English") for the status-bar badge,
+    /// in the UI's display language. When the pair's two languages share a
+    /// language code (zh-Hans vs zh-Hant — a valid pair, the adoption logic
+    /// is script-aware), the short name would label both panels identically,
+    /// so fall back to the full locale name ("中国語（簡体字、中国）").
+    private func languageName(_ id: String) -> String {
+        let locale = Locale(identifier: id)
+        guard let code = locale.language.languageCode?.identifier else { return id }
+        let pair = state.pairLanguageIDs
+        let codesCollide = pair.count > 1
+            && Locale(identifier: pair[0]).language.languageCode
+                == Locale(identifier: pair[1]).language.languageCode
+        if codesCollide {
+            return Preferences.displayLocale.localizedString(forIdentifier: id) ?? id
+        }
+        return Preferences.displayLocale.localizedString(forLanguageCode: code) ?? id
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            HistoryContent(state: state)
+            if let language = panelLanguage {
+                BilingualContent(state: state, language: language)
+            } else {
+                HistoryContent(state: state)
+            }
             Divider()
             HStack(spacing: 8) {
+                // Which language this panel carries — visible while idle too,
+                // when the status text alone cannot tell the two bidirectional
+                // panels apart.
+                if let language = panelLanguage {
+                    Text(languageName(language))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(Capsule().fill(Color.secondary.opacity(0.18)))
+                }
                 Circle()
                     .fill(state.isRunning ? Color.green : Color.secondary)
                     .frame(width: 8, height: 8)
@@ -45,7 +98,8 @@ struct PanelView: View {
         // button (hidden with the rest of the chrome) only while the pointer
         // is over the panel. Clicking it hides the panel via windowShouldClose.
         .onHover { inside in
-            AppDelegate.panel?.standardWindowButton(.closeButton)?.isHidden = !inside
+            let window = role == .primary ? AppDelegate.panel : AppDelegate.panel2
+            window?.standardWindowButton(.closeButton)?.isHidden = !inside
         }
     }
 }
@@ -308,6 +362,150 @@ private struct HistoryContent: View {
         // when there are only a few rows.
         .defaultScrollAnchor(.bottom, for: .initialOffset)
         .defaultScrollAnchor(.bottom, for: .sizeChanges)
+    }
+}
+
+/// One bidirectional language panel: the full conversation in a single
+/// language. Utterances adopted in this language appear as their original
+/// text immediately; utterances adopted in the other language appear as
+/// their translation into this one, holding the row's canonical (startedAt)
+/// position with a spinner until the translation lands. The live slots show
+/// this language's in-progress recognition per channel (system first).
+/// While the other language is being spoken, the live text here is the
+/// recognizer's garbled own-language reading — accepted in the spec: it is
+/// transient (cleared at finalize) and instantly recognizable as noise to a
+/// reader of this language.
+private struct BilingualContent: View {
+    var state: AppState
+    let language: String
+
+    /// Rows whose original (other-language) text is temporarily revealed by a
+    /// click. Only meaningful on translation rows while the global source
+    /// setting is off.
+    @State private var revealedSourceIDs: Set<UUID> = []
+
+    /// Own-language originals always show. Other-language rows show their
+    /// translation, or a spinner while one is still coming; when none will
+    /// ever come (bilingual transcription mode, or the translation lane went
+    /// down without marking this row failed), the row is omitted rather than
+    /// spinning forever. Failed rows stay, labeled, so the reader can see the
+    /// gap.
+    private var rows: [Utterance] {
+        state.utterances.filter { utterance in
+            utterance.language == language
+                || utterance.translation != nil
+                || utterance.finalTranslationFailed
+                // No translation is coming for a skipped row (possible when a
+                // classic session's history is viewed in this layout after a
+                // mode switch) — omit it rather than spin forever.
+                || (state.translationReady && !utterance.translationSkipped)
+        }
+    }
+
+    private var liveEntries: [(channel: String, text: String?)] {
+        state.liveSlots(language: language)
+    }
+
+    var body: some View {
+        if state.newestOnTop {
+            VStack(spacing: 0) {
+                if !liveEntries.isEmpty {
+                    VStack(spacing: 6) {
+                        liveSlots
+                    }
+                    .padding(10)
+                }
+                ScrollView {
+                    LazyVStack(spacing: 12) {
+                        ForEach(rows.reversed()) { utterance in
+                            row(utterance)
+                        }
+                    }
+                    .padding(12)
+                }
+            }
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 12) {
+                    ForEach(rows) { utterance in
+                        row(utterance)
+                    }
+                    liveSlots
+                }
+                .padding(12)
+            }
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
+            .defaultScrollAnchor(.bottom, for: .sizeChanges)
+        }
+    }
+
+    /// One live slot per channel with recognition in progress. The leading
+    /// spinner marks "speech in progress" (the same "not final yet" sign the
+    /// classic panel's pending slots use); the text is this language's
+    /// in-progress reading when its recognizer is producing one — main font
+    /// size (this is the panel's native reading text), secondary color as the
+    /// "still changing" cue. A slot with no text of its own stays as the bare
+    /// spinner, so the quiet panel still shows that something is coming.
+    @ViewBuilder
+    private var liveSlots: some View {
+        ForEach(liveEntries, id: \.channel) { entry in
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                PendingSpinner()
+                if let text = entry.text {
+                    Text(text)
+                        .font(.system(size: state.fontSize))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(state.liveLines)
+                        .truncationMode(.head)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    private func row(_ utterance: Utterance) -> some View {
+        VStack(spacing: 3) {
+            if utterance.language == language {
+                // The original, in this panel's own language.
+                Text(utterance.source)
+                    .font(.system(size: state.fontSize))
+                    .selectable(state.sourceTextVisible)
+            } else {
+                // The other language's utterance, shown as its translation.
+                // A click reveals the original (mirrors the classic panel's
+                // per-row source toggle).
+                if state.sourceTextVisible || revealedSourceIDs.contains(utterance.id) {
+                    Text(utterance.source)
+                        .font(.system(size: max(9, state.sourceFontSize)))
+                        .foregroundStyle(.secondary)
+                        .selectable(state.sourceTextVisible)
+                }
+                if utterance.translation != nil {
+                    TranslationText(
+                        utterance: utterance,
+                        fontSize: state.fontSize,
+                        selectable: state.sourceTextVisible)
+                } else if utterance.finalTranslationFailed {
+                    Text(L("translation.failed"))
+                        .font(.system(size: max(8, state.fontSize * 0.72)))
+                        .foregroundStyle(.tertiary)
+                } else {
+                    PendingSpinner()
+                }
+            }
+        }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .simultaneousGesture(TapGesture().onEnded {
+            guard !state.sourceTextVisible, utterance.language != language else { return }
+            if revealedSourceIDs.contains(utterance.id) {
+                revealedSourceIDs.remove(utterance.id)
+            } else {
+                revealedSourceIDs.insert(utterance.id)
+            }
+        })
     }
 }
 

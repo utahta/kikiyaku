@@ -3,7 +3,16 @@ import Observation
 
 struct Utterance: Identifiable, Sendable {
     let id: UUID
+    /// Canonical start time of the utterance's audio on the session-wide clock
+    /// (the channel's hostTime epoch plus the recognizer's audio time range) —
+    /// not the moment the finalize arrived. With two channels the recognition
+    /// delays differ, so arrival order is not speech order; this is.
     let time: Date
+    /// Capture channel that produced the utterance ("mic" / "system").
+    let channel: String
+    /// BCP-47 code of the recognized language (in bidirectional mode, the
+    /// adopted language; otherwise language 1).
+    let language: String
     let source: String
     var translation: String?
     /// Provisional translation carried over from the live area when the
@@ -32,6 +41,21 @@ struct Utterance: Identifiable, Sendable {
     }
 }
 
+/// Key of one live-text slot: a capture channel × recognized language.
+struct LiveKey: Hashable, Sendable {
+    let channel: String
+    let language: String
+}
+
+/// One slot's in-progress text plus where its audio range ends on the
+/// channel's timeline (0 = unknown). The end drives the staleness judgment
+/// between the pair's two racing drains — MainActor serializes their posts,
+/// but not in audio order.
+struct LiveText: Sendable {
+    var text: String
+    var audioEnd: TimeInterval
+}
+
 @MainActor
 @Observable
 final class AppState {
@@ -41,6 +65,31 @@ final class AppState {
     var status = L("status.idle")
     var utterances: [Utterance] = []
     var volatileText = ""
+    /// Latest in-progress text per capture channel × recognized language
+    /// (classic mode: one language; bidirectional: up to 2×2). The classic
+    /// panel's volatileText is composed with system-first ownership: the
+    /// remote side's speech is information the user cannot know, so it
+    /// preempts the mic's text the moment it is non-empty; the mic takes the
+    /// slot back only while the system channel is silent. Recognition
+    /// continues on both channels regardless — ownership affects display
+    /// only, never the history. The bidirectional panels read the entries
+    /// directly (per language, one live slot per channel).
+    private(set) var liveTexts: [LiveKey: LiveText] = [:]
+    /// Per-channel watermark on the channel's audio timeline: everything up
+    /// to this point has been finalized (adopted). A volatile whose audio
+    /// lies entirely at or before it is a late arrival from the other
+    /// language's drain for an utterance that already ended — displaying it
+    /// would resurrect stale text over a finalized row.
+    private var finalizedThrough: [String: TimeInterval] = [:]
+    /// The UI shows two language panels instead of the classic one.
+    /// Initialized from the configured mode so the layout is visible before
+    /// the first start; while idle, settings changes re-sync it immediately
+    /// (AppDelegate.applyConfiguredLayout), and a session start pins it to
+    /// the running session's configuration.
+    var bidirectionalSession = Preferences.bidirectionalConfigured
+    /// BCP-47 codes of the language pair the panels bind to
+    /// ([language 1, language 2]). Kept in sync the same way.
+    var pairLanguageIDs = [Preferences.sourceLocaleID, Preferences.targetLocaleID]
     /// Provisional translation of the in-progress utterance (sentence-boundary
     /// triggered). Displayed in a pale style below the live text; cleared when
     /// the utterance finalizes (the final translation takes over).
@@ -67,31 +116,134 @@ final class AppState {
     /// Opacity of the panel background. Text stays fully opaque; only the background is translucent.
     var panelOpacity = Preferences.panelOpacity
 
-    /// Called for an empty final result: the utterance boundary passed without
-    /// a row to append. An empty final still ends the utterance — clear the
-    /// in-progress display (volatile and provisional text alike; leaving the
-    /// volatile text would keep showing a retracted recognition with a spinner)
-    /// and advance the generation so a provisional result still in flight for
-    /// the ended utterance cannot be applied to the next one.
-    func discardPendingUtterance() {
-        volatileText = ""
-        provisionalText = ""
-        provisionalGeneration += 1
+    /// Publishes one slot's in-progress recognition text and recomposes the
+    /// classic panel's live text under the system-first ownership rule.
+    /// audioEnd = end of the text's audio range on the channel's timeline
+    /// (0 / unknown = always accepted). A volatile whose audio lies entirely
+    /// at or before the channel's finalized watermark is dropped: it is a
+    /// late arrival from the pair's other-language drain for an utterance
+    /// that already finalized, and displaying it would resurrect stale text
+    /// (with its spinner) over the finished row.
+    func setLive(_ text: String, channel: String, language: String, audioEnd: TimeInterval) {
+        if !text.isEmpty, audioEnd > 0, audioEnd <= (finalizedThrough[channel] ?? 0) {
+            return
+        }
+        liveTexts[LiveKey(channel: channel, language: language)] = LiveText(
+            text: text, audioEnd: audioEnd)
+        recomposeVolatile()
     }
 
-    func appendFinal(_ utterance: Utterance) {
+    /// Clears one slot (that recognizer's utterance ended without an adopted
+    /// row: an empty final, or a below-threshold finalize in bidirectional
+    /// mode).
+    func clearLiveSlot(channel: String, language: String) {
+        liveTexts[LiveKey(channel: channel, language: language)] = nil
+        recomposeVolatile()
+    }
+
+    /// Clears all live text (session start/stop).
+    func clearLive() {
+        liveTexts = [:]
+        finalizedThrough = [:]
+        volatileText = ""
+    }
+
+    /// The live slots one bidirectional panel shows: one per channel with any
+    /// in-progress recognition (system first — the remote side's speech above
+    /// one's own voice). `text` is this language's volatile when it has one;
+    /// nil when only the pair's other language is producing text on that
+    /// channel — the panel then shows a spinner-only slot, so speech in
+    /// progress is visible on both panels even while one recognizer stays
+    /// quiet.
+    func liveSlots(language: String) -> [(channel: String, text: String?)] {
+        ["system", "mic"].compactMap { channel in
+            let anyActive = liveTexts.contains {
+                $0.key.channel == channel && !$0.value.text.isEmpty
+            }
+            guard anyActive else { return nil }
+            let own = liveTexts[LiveKey(channel: channel, language: language)]?.text
+            return (channel, (own?.isEmpty ?? true) ? nil : own)
+        }
+    }
+
+    private func recomposeVolatile() {
+        // System first; within a channel, take the first non-empty entry in
+        // stable language order (classic mode has one language per channel, so
+        // the language tiebreak only matters for the bidirectional session,
+        // where the classic panel is not the one on display).
+        for channel in ["system", "mic"] {
+            let entries = liveTexts
+                .filter { $0.key.channel == channel && !$0.value.text.isEmpty }
+                .sorted { $0.key.language < $1.key.language }
+            if let first = entries.first {
+                volatileText = first.value.text
+                return
+            }
+        }
+        volatileText = ""
+    }
+
+    /// Called for an empty final result: the utterance boundary passed without
+    /// a row to append. An empty final still ends the utterance — clear the
+    /// channel's in-progress display (leaving the volatile text would keep
+    /// showing a retracted recognition with a spinner). Only the channel that
+    /// owns the provisional pipeline also clears the provisional text and
+    /// advances the generation (so an in-flight provisional result for the
+    /// ended utterance cannot attach to the next one) — another channel's
+    /// finalize must not tear down a provisional it does not own.
+    func discardPendingUtterance(channel: String, language: String, ownsProvisional: Bool) {
+        clearLiveSlot(channel: channel, language: language)
+        if ownsProvisional {
+            provisionalText = ""
+            provisionalGeneration += 1
+        }
+    }
+
+    /// audioEnd = end of the finalized utterance's audio range on its
+    /// channel's timeline; it advances the channel's finalized watermark.
+    func appendFinal(_ utterance: Utterance, ownsProvisional: Bool, audioEnd: TimeInterval) {
         var utterance = utterance
         // Carry the on-screen provisional translation into the history row so
         // the text being read doesn't vanish at finalize; the final translation
         // replaces it when it arrives. Skipped utterances keep their skip label
-        // (their recognition — and thus the provisional — is suspect).
-        if !provisionalText.isEmpty, utterance.translation == nil, !utterance.translationSkipped {
-            utterance.provisionalTranslation = provisionalText
+        // (their recognition — and thus the provisional — is suspect). Only the
+        // provisional-owning channel may carry or clear it: a mic finalize
+        // grabbing the system channel's provisional would attach it to the
+        // wrong utterance.
+        if ownsProvisional {
+            if !provisionalText.isEmpty, utterance.translation == nil, !utterance.translationSkipped {
+                utterance.provisionalTranslation = provisionalText
+            }
+            provisionalText = ""
+            provisionalGeneration += 1
         }
-        utterances.append(utterance)
-        volatileText = ""
-        provisionalText = ""
-        provisionalGeneration += 1
+        insertByTime(utterance)
+        // The utterance ended: advance the channel's finalized watermark and
+        // drop every slot whose audio the finalize covered — including the
+        // pair's other recognizer's garbled reading of the same audio, which
+        // rarely finalizes at the same moment (left alone, its text and the
+        // bare spinner slot would outlive the finalized row). A volatile of a
+        // newer utterance (the other drain racing ahead) survives; slots with
+        // an unknown range (audioEnd 0) are cleared like before.
+        let watermark = max(finalizedThrough[utterance.channel] ?? 0, audioEnd)
+        finalizedThrough[utterance.channel] = watermark
+        for (key, value) in liveTexts where key.channel == utterance.channel {
+            if value.audioEnd <= watermark {
+                liveTexts[key] = nil
+            }
+        }
+        recomposeVolatile()
+    }
+
+    /// Inserts in canonical startedAt order. Arrivals are nearly in time order
+    /// (two channels' recognition delays differ by at most a few seconds), so
+    /// scan back from the end.
+    private func insertByTime(_ utterance: Utterance) {
+        var index = utterances.endIndex
+        while index > utterances.startIndex && utterances[index - 1].time > utterance.time {
+            index -= 1
+        }
+        utterances.insert(utterance, at: index)
     }
 
     /// Called when an LLM (Claude etc.) translation arrives.

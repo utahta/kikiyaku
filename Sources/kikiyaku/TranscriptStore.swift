@@ -51,6 +51,8 @@ enum TranscriptStore {
         for utterance in utterances {
             let record = Record(
                 time: utterance.time,
+                channel: utterance.channel,
+                language: utterance.language,
                 source: utterance.source,
                 translation: utterance.translation,
                 // Only meaningful while no final translation exists (a failed
@@ -71,7 +73,13 @@ enum TranscriptStore {
     }
 
     private struct Record: Encodable {
+        /// Canonical start time of the utterance's audio (session-wide clock),
+        /// not the finalize arrival.
         let time: Date
+        /// Capture channel ("mic" / "system").
+        let channel: String
+        /// BCP-47 code of the recognized (adopted) language.
+        let language: String
         let source: String
         let translation: String?
         let provisionalTranslation: String?

@@ -24,6 +24,8 @@
 "status.preparing" = "準備中…";
 "status.downloadingModel" = "音声認識モデルをダウンロード中…（初回のみ）";
 "status.recognizing" = "認識中（%1$@・%2$@ → %3$@）";
+"status.recognizingBidirectional" = "認識中（%1$@・%2$@ ⇄ %3$@）";
+"status.recognizingBilingual" = "認識中（%1$@・%2$@＋%3$@・翻訳なし）";
 "status.recognizingNoTranslation" = "認識中（%1$@・%2$@・翻訳なし）";
 "status.recognizingClaudeMissing" = "認識中（claude CLI が見つからず翻訳なし。claudePath で指定できます）";
 "status.startFailed" = "開始に失敗: %@";
@@ -37,7 +39,9 @@
 "status.outputDeviceChangedSuffix" = "（出力デバイスの変更により自動停止。もう一度開始してください）";
 "source.mic" = "マイク";
 "source.system" = "システム音声";
+"source.both" = "マイク＋システム音声";
 "status.recognitionErrorSuffix" = "（認識エラーで自動停止: %@）";
+"status.missingConfidenceSuffix" = " — 認識結果に信頼度が付かないため話者の言語を判定できず、発話を破棄しています。単方向のモードに切り替えてください。";
 "status.llmStoppedNone" = "%@ 翻訳を停止（連続失敗）。このセッションは翻訳なしで継続";
 
 /* Translations */
@@ -48,6 +52,7 @@
 "error.converter" = "マイク音声の変換器を作成できませんでした";
 "error.micDenied" = "マイクの使用が許可されていません";
 "error.speechDenied" = "音声認識の使用が許可されていません（システム設定 > プライバシーとセキュリティ > 音声認識 で許可してください）";
+"error.languageUnsupported" = "音声認識が %@ に対応していません（設定で対応言語を選んでください）";
 
 /* Settings */
 "settings.language" = "表示言語";
@@ -57,14 +62,19 @@
 "settings.audioSource" = "音声入力";
 "settings.audioSource.mic" = "マイク";
 "settings.audioSource.system" = "システム音声（他アプリの音）";
-"settings.audioSourceCaption" = "システム音声を選ぶと、オンライン会議の相手の声など Mac が再生している音を文字起こしします（自分の声は入りません）。初回はシステム音声の録音の許可を求められます。次回の「開始」から反映されます。";
-"settings.sourceLanguage" = "翻訳元（音声）";
-"settings.targetLanguage" = "翻訳先";
-"settings.swapLanguages" = "⇄ 翻訳元と翻訳先を入れ替え";
-"settings.swapUnsupportedCaption" = "現在の翻訳先は音声認識が対応していない言語のため、入れ替えできません。";
-"settings.languageCaption" = "言語の変更は次回の「開始」から反映されます。";
-"settings.translation" = "翻訳";
-"settings.translationCaption" = "オンにすると、確定した発話を選択中のバックエンドが翻訳します。オフでは文字起こしのみを行います（議事録用途や利用枠の節約に）。次回の「開始」から反映されます。";
+"settings.audioSource.both" = "両方（マイク＋システム音声）";
+"settings.audioSourceCaption" = "システム音声を選ぶと、オンライン会議の相手の声など Mac が再生している音を文字起こしします（自分の声は入りません）。「両方」は2つを同時にキャプチャします（相手の声はシステム音声から、自分の声はマイクから。マイクがスピーカーの音を拾わないようイヤホンの利用を推奨）。初回はシステム音声の録音の許可を求められます。次回の「開始」から反映されます。";
+"settings.sourceLanguage" = "言語1";
+"settings.targetLanguage" = "言語2";
+"settings.swapLanguages" = "⇄ 言語1と言語2を入れ替え";
+"settings.swapUnsupportedCaption" = "現在の言語2は音声認識が対応していない言語のため、入れ替えできません。";
+"settings.languageCaption" = "単方向のモードでは言語1を、双方向のモードでは両方を認識します。言語の変更は次回の「開始」から反映されます。";
+"settings.mode" = "モード";
+"settings.mode.translate" = "単方向翻訳（言語1 → 言語2）";
+"settings.mode.bidirectional" = "双方向翻訳（言語1 ⇄ 言語2）";
+"settings.mode.transcribe" = "文字起こしのみ（言語1）";
+"settings.mode.bilingual" = "二言語文字起こし（言語1・言語2）";
+"settings.modeCaption" = "単方向翻訳: 言語1の発話を選択中のバックエンドが言語2へ翻訳します。双方向翻訳: 両言語を認識し、発話ごとに信頼度で言語を判定して相互に翻訳します（両言語が話される会議向け。仮訳は無効）。文字起こしのみ: 言語1を翻訳なしで文字起こしします（議事録用途や利用枠の節約に）。二言語文字起こし: 両言語を認識・判定し、翻訳なしで記録します。次回の「開始」から反映されます。";
 "settings.backend" = "翻訳バックエンド";
 "settings.backend.claude" = "Claude（CLI）";
 "settings.backend.openai" = "OpenAI 互換（API / ローカル）";
@@ -81,7 +91,7 @@
 "settings.profiles.keyCaption" = "キーはプロファイル内ではなく、この接続先用としてキーチェーンへ保存されます。";
 "settings.profilesCaption" = "バックエンド設定（バックエンド・接続先 URL・モデル）に名前を付けて保存し、「適用」で切り替えられます。「追加…」は現在の設定が初期値になります。API キーは接続先ごとにキーチェーンへ保存されているため、切り替えに自動で追従します。適用は次回の「開始」から反映されます。";
 "settings.provisional" = "区切りごとの仮訳";
-"settings.provisionalCaption" = "長い発話の途中でも、文の区切りを検出するたびに認識済みの部分を仮翻訳し、ライブ枠の下に薄色で表示します（発話の確定時に確定訳へ置き換わります）。OpenAI 互換バックエンドでのみ利用できます。次回の「開始」から反映されます。";
+"settings.provisionalCaption" = "長い発話の途中でも、文の区切りを検出するたびに認識済みの部分を仮翻訳し、ライブ枠の下に薄色で表示します（発話の確定時に確定訳へ置き換わります）。OpenAI 互換バックエンドでのみ利用でき、双方向翻訳では無効です。次回の「開始」から反映されます。";
 "settings.openaiBaseURL" = "接続先 URL";
 "settings.openaiModel" = "モデル名";
 "settings.openaiKey" = "API キー";
@@ -103,7 +113,7 @@
 "settings.modelCaption" = "レイテンシは3モデルともほぼ同等（約2〜3秒/発話）。Opus は誤認識の復元力が最も高く、Haiku は利用枠の消費が最小です。次回の「開始」から反映されます。";
 "settings.systemPrompt" = "システムプロンプト";
 "settings.resetDefault" = "デフォルトに戻す";
-"settings.promptCaption" = "{source} と {target} は選択中の言語の英語名（例: English (United States)）に置換されます。発話が <u>...</u> タグで渡される前提は崩さないでください（崩すと翻訳ではなく会話として応答するようになります）。次回の「開始」から反映されます。";
+"settings.promptCaption" = "発話は翻訳方向を示す source / target 属性（BCP-47 コード）付きの <u> タグで渡されます。カスタマイズする場合も「target 属性の言語へ訳す」という前提を保つと、1つのプロンプトが単方向・双方向の両方に対応します。発話が <u>...</u> タグで渡される前提は崩さないでください（崩すと翻訳ではなく会話として応答するようになります）。次回の「開始」から反映されます。";
 "settings.newestOnTop" = "新しい発話を上に表示";
 "settings.newestOnTopCaption" = "オン: 認識途中のテキストを最上部の固定枠に表示し、確定した発話が新しい順に並びます（視線の位置が固定される）。オフ: 従来どおり下に追記され、最下部に追従します。即時反映されるので、実行中に切り替えて比較できます。";
 "settings.liveLines" = "ライブ枠の行数";
@@ -115,9 +125,10 @@
 "settings.sourceTextCaption" = "オフにすると訳文だけのパネルになります（認識中はスピナーの回転で分かります）。即時反映されます。";
 "settings.opacity" = "パネルの不透明度";
 "settings.opacityCaption" = "背景の透け具合です。文字（認識・訳文）は常に不透明のまま表示されます。即時反映されます。";
-"settings.threshold" = "翻訳スキップ閾値";
+"settings.threshold" = "信頼度閾値";
 "settings.off" = "オフ";
-"settings.thresholdCaption" = "認識の平均信頼度がこの値未満の発話は翻訳しません。翻訳元と別の言語（例: 室内の日本語の雑談）の誤認識を弾くための設定です。即時反映されます。信頼度は保存される JSONL にも記録されるので、実データを見て調整できます。";
+"settings.thresholdBidirectionalFloor" = "双方向のモードではこの値で発話の言語を判定するため、オフにはできません（代わりに %@ が適用されます）。";
+"settings.thresholdCaption" = "単方向では、認識の平均信頼度がこの値未満の発話を翻訳せず「翻訳スキップ」として表示します（言語1と別の言語の誤認識を弾くための設定です）。双方向・二言語文字起こしでは言語判定の採用基準になり、この値未満の確定結果は誤言語側の認識とみなして破棄します（表示も保存もされません）。即時反映されます。信頼度は保存される JSONL にも記録されるので、実データを見て調整できます。";
 "settings.autoStop" = "自動停止";
 "settings.autoStopValue" = "無音 %d 分で停止";
 "settings.autoStopCaption" = "音声認識の結果がこの時間まったく出なかったら、自動的に停止して保存します（止め忘れ防止）。0 でオフ。即時反映されます。";
