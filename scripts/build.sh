@@ -26,6 +26,36 @@ if [ -d "$RES_BUNDLE" ]; then
     cp -R "$RES_BUNDLE" "$APP/Contents/Resources/"
 fi
 
+# The app icon, named to match CFBundleIconFile in Info.plist. Rebuilt from
+# the SVG when ImageMagick is around — every size is then rendered from the
+# vector rather than resampled from one bitmap, which is the difference
+# between a legible 16px icon and a smudge. Without the tool, the committed
+# .icns is used as it is.
+ICON_SVG="$ROOT/Resources/icon/AppIcon.svg"
+ICON_ICNS="$ROOT/Resources/icon/AppIcon.icns"
+if [ -f "$ICON_SVG" ] && command -v magick >/dev/null 2>&1; then
+    ICONSET="$(mktemp -d)/AppIcon.iconset"
+    mkdir -p "$ICONSET"
+    render_icon() {  # size, iconset name
+        # Substitute on line 1 only: the background rect carries the same
+        # numbers, and rewriting those too would shrink it out of the frame.
+        sed "1s|width=\"1024\" height=\"1024\"|width=\"$1\" height=\"$1\"|" \
+            "$ICON_SVG" > "$ICONSET/../render.svg"
+        magick "$ICONSET/../render.svg" "$ICONSET/$2.png"
+    }
+    render_icon 16 icon_16x16;      render_icon 32 icon_16x16@2x
+    render_icon 32 icon_32x32;      render_icon 64 icon_32x32@2x
+    render_icon 128 icon_128x128;   render_icon 256 icon_128x128@2x
+    render_icon 256 icon_256x256;   render_icon 512 icon_256x256@2x
+    render_icon 512 icon_512x512;   render_icon 1024 icon_512x512@2x
+    iconutil -c icns "$ICONSET" -o "$ICON_ICNS"
+    rm -rf "$(dirname "$ICONSET")"
+fi
+if [ -f "$ICON_ICNS" ]; then
+    mkdir -p "$APP/Contents/Resources"
+    cp "$ICON_ICNS" "$APP/Contents/Resources/AppIcon.icns"
+fi
+
 # Localizations for the permission dialog texts. InfoPlist.strings must live in
 # the main .app bundle's lproj directories, not in the SwiftPM resource bundle.
 for lang in ja en; do
