@@ -18,6 +18,19 @@ mkdir -p "$APP/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/kikiyaku"
 cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 
+# The version has one home — the VERSION file, which tagpr bumps on release —
+# and is stamped into the bundle here. A second copy kept in Info.plist would
+# have to be remembered at release time, and the one that gets forgotten is the
+# one users see in the About box.
+VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION")"
+if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "VERSION holds '$VERSION'; expected MAJOR.MINOR.PATCH" >&2
+    exit 1
+fi
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
+echo ">> version: $VERSION"
+
 # Bundle the SwiftPM resource bundle (localized strings).
 # Without it, resolving the resource bundle fails at launch.
 RES_BUNDLE="$BINDIR/kikiyaku_kikiyaku.bundle"

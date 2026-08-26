@@ -21,10 +21,12 @@
 	<string>Kikiyaku</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<!-- Both version strings are stamped from the VERSION file at build time
+	     (scripts/build.sh); the placeholders below are never shipped. -->
 	<key>CFBundleShortVersionString</key>
-	<string>0.1.0</string>
+	<string>0.0.0</string>
 	<key>CFBundleVersion</key>
-	<string>0.1.0</string>
+	<string>0.0.0</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
 	<key>NSAppTransportSecurity</key>

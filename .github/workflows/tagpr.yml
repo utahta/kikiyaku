@@ -1,0 +1,75 @@
+name: tagpr
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  # Maintains the "next release" pull request. Merging it tags the commit,
+  # which is what the job below waits for.
+  tagpr:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tagpr.outputs.tag }}
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: tagpr
+        uses: Songmu/tagpr@242e22916eb775d6e359959fe3ba5c497de4a01a # v1.20.2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Only runs on the push that carries the tag. tagpr leaves the release as a
+  # draft, so the app can be attached before anyone sees it.
+  release:
+    needs: tagpr
+    if: needs.tagpr.outputs.tag != ''
+    runs-on: macos-26
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.tagpr.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.tagpr.outputs.tag }}
+
+      # No signing identity on the runner, so the app is signed ad hoc — which
+      # is what a release wants anyway: kikiyaku-dev is a local certificate
+      # that exists on no one else's Mac. Xcode is present here, so the icon
+      # step compiles the Assets.car that keeps the Dock from plating the icon.
+      - name: Build
+        run: ./scripts/build.sh
+
+      - name: Package
+        id: package
+        run: |
+          # ditto, not zip: a .app is a directory whose symlinks and extended
+          # attributes carry the signature, and zip discards them.
+          ARCHIVE="Kikiyaku_${TAG}_macos_arm64.zip"
+          ditto -c -k --sequesterRsrc --keepParent build/Kikiyaku.app "$ARCHIVE"
+          echo "archive=$ARCHIVE" >> "$GITHUB_OUTPUT"
+
+      # Catches the two ways a release can be quietly wrong: a signature that
+      # did not survive packaging, and a bundle whose version is not the one
+      # being tagged.
+      - name: Verify
+        run: |
+          rm -rf verify && ditto -x -k "${{ steps.package.outputs.archive }}" verify
+          codesign --verify --deep --strict --verbose=2 verify/Kikiyaku.app
+          BUILT="$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" \
+            verify/Kikiyaku.app/Contents/Info.plist)"
+          if [ "$BUILT" != "${TAG#v}" ]; then
+            echo "bundle says $BUILT, tag says ${TAG#v}" >&2
+            exit 1
+          fi
+
+      - name: Publish
+        run: |
+          gh release upload "$TAG" "${{ steps.package.outputs.archive }}" --clobber
+          gh release edit "$TAG" --draft=false --latest
