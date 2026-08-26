@@ -387,7 +387,7 @@ struct SettingsView: View {
                     }
                     LabeledContent(L("settings.openaiModel")) {
                         HStack {
-                            TextField("", text: $openAIModel, prompt: Text(verbatim: "gpt-5.5"))
+                            TextField("", text: $openAIModel, prompt: Text(verbatim: "gpt-5.6-terra"))
                                 .textFieldStyle(.roundedBorder)
                                 .frame(width: 190)
                                 .autocorrectionDisabled()

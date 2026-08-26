@@ -195,7 +195,7 @@ enum Preferences {
     }
 
     static var openAIModel: String {
-        get { UserDefaults.standard.string(forKey: openAIModelKey) ?? "gpt-5.5" }
+        get { UserDefaults.standard.string(forKey: openAIModelKey) ?? "gpt-5.6-terra" }
         set { UserDefaults.standard.set(newValue, forKey: openAIModelKey) }
     }
 
