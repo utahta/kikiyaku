@@ -69,6 +69,17 @@ extension Utterance {
     }
 }
 
+/// Where a session is in its life. Only `.idle` may be reconfigured: a
+/// startup has already taken its settings, so a change made during one would
+/// show in the settings window while the session ran on the values it
+/// captured.
+enum SessionPhase {
+    case idle
+    /// Permissions, model downloads, capture and analyzer startup.
+    case starting
+    case running
+}
+
 /// Key of one live-text slot: a capture channel × recognized language.
 struct LiveKey: Hashable, Sendable {
     let channel: String
@@ -89,7 +100,15 @@ struct LiveText: Sendable {
 final class AppState {
     static let shared = AppState()
 
-    var isRunning = false
+    /// The session's phase, in one observable value. Two independent flags
+    /// (running here, starting on the engine) could disagree, and the one on
+    /// the engine was invisible to SwiftUI — which left the settings window
+    /// showing editable controls through a startup that can run as long as a
+    /// speech-model download.
+    var phase: SessionPhase = .idle
+
+    /// A session is under way and producing utterances.
+    var isRunning: Bool { phase == .running }
     var status = L("status.idle")
     var utterances: [Utterance] = []
     var volatileText = ""

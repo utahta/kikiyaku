@@ -230,13 +230,6 @@ final class Engine {
         lastActivity = Date()
     }
 
-    /// start() suspends at several awaits before isRunning is set, so isRunning
-    /// alone cannot prevent re-entry (mashing the start button). Guard double
-    /// starts with a flag set synchronously before the first await. Read-only
-    /// public: the settings-driven layout sync must also stand down while a
-    /// start is in flight (the engine has already pinned the session's pair).
-    private(set) var isStarting = false
-
     /// Gate holding every drain's first result until the whole startup
     /// succeeded (see StartGate). Kept for teardown to abort, releasing
     /// gate-parked drains on the failure path.
@@ -364,9 +357,16 @@ final class Engine {
 
     func start() async {
         let state = AppState.shared
-        guard !state.isRunning, !isStarting else { return }
-        isStarting = true
-        defer { isStarting = false }
+        // start() suspends at several awaits before the session commits, so a
+        // "running" test alone cannot prevent re-entry (mashing the button).
+        // The phase moves to .starting synchronously, before the first await,
+        // and it lives on AppState so the settings window can see it too.
+        guard state.phase == .idle else { return }
+        state.phase = .starting
+        defer {
+            // Only when the startup neither committed nor already gave up.
+            if state.phase == .starting { state.phase = .idle }
+        }
         let failures = StreamFailureBox()
         streamFailures = failures
 
@@ -625,15 +625,17 @@ final class Engine {
             // from here to the stop it belongs to the running session.
             state.bidirectionalSession = bidirectional
             state.pairLanguageIDs = recognizedLocales.map { $0.identifier(.bcp47) }
-            state.isRunning = true
+            state.phase = .running
             // Publish "translation ready" to the UI only after the whole startup
             // succeeded. Setting it earlier would leave a forever-pending "…" in
             // the UI when the mic or analyzer fails to start.
             state.translationReady = useLLM
             // Bring the second (language 2) panel up for a bidirectional
-            // session; retire it when a classic session takes over.
+            // session; retire it when a classic session takes over. Starting a
+            // session is explicit enough to override a panel closed during the
+            // last one — this layout is being set up afresh.
             if bidirectional {
-                AppDelegate.showSecondPanel()
+                AppDelegate.restoreSecondPanel()
             } else {
                 AppDelegate.hideSecondPanel()
             }
@@ -674,7 +676,7 @@ final class Engine {
             // configuration). The starting flag must drop first — the layout
             // sync stands down while it is set (the defer would clear it
             // again, harmlessly).
-            isStarting = false
+            state.phase = .idle
             AppDelegate.applyConfiguredLayout()
         }
     }
@@ -718,7 +720,7 @@ final class Engine {
         // teardown waits for the translation queue to drain, so every utterance
         // has its translation by this point.
         await teardown()
-        state.isRunning = false
+        state.phase = .idle
         state.clearLive()
         state.provisionalText = ""
         do {

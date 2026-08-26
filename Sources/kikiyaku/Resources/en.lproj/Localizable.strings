@@ -77,6 +77,7 @@
 "settings.languageCaption.translate" = "The source language is recognized from speech and translated into the target language. Changes take effect the next time you start.";
 "settings.languageCaption.transcribe" = "The selected language is recognized from speech. Changes take effect the next time you start.";
 "settings.languageCaption.pair" = "Both languages are recognized, and each utterance is judged to be one or the other. Changes take effect the next time you start.";
+"settings.sessionLockedCaption" = "While listening, the session's settings — mode, audio input, languages, translation backend — cannot be changed. Stop first.";
 "settings.mode" = "Mode";
 "settings.mode.translate" = "One-direction translation";
 "settings.mode.bidirectional" = "Bidirectional translation";

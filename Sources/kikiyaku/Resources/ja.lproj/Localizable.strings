@@ -77,6 +77,7 @@
 "settings.languageCaption.translate" = "翻訳元の言語を音声認識し、翻訳先の言語へ翻訳します。変更は次に開始したときから反映されます。";
 "settings.languageCaption.transcribe" = "選択した言語を音声認識します。変更は次に開始したときから反映されます。";
 "settings.languageCaption.pair" = "両方の言語を音声認識し、発話ごとにどちらが話されたかを判定します。変更は次に開始したときから反映されます。";
+"settings.sessionLockedCaption" = "認識中は、セッションの設定（モード・音声入力・言語・翻訳バックエンド）を変更できません。停止してから変更してください。";
 "settings.mode" = "モード";
 "settings.mode.translate" = "単方向翻訳";
 "settings.mode.bidirectional" = "双方向翻訳";

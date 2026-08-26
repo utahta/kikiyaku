@@ -96,6 +96,17 @@ struct SettingsView: View {
         sessionMode.translates
     }
 
+    /// The settings that define a session — what it recognizes, in which
+    /// languages, and what it does with the result — are fixed while one is
+    /// running. They could never take effect before the next start anyway, and
+    /// changing them now clears the panel to match the new configuration,
+    /// which is not something to do underneath a session in progress. The
+    /// display settings below stay live, since watching the panel change is
+    /// the point of them.
+    private var sessionLocked: Bool {
+        AppState.shared.phase != .idle
+    }
+
     // The pair of languages plays a different role in each mode, so the two
     // pickers say what they actually are rather than carrying the neutral
     // "language 1 / language 2" everywhere. Only the bidirectional modes,
@@ -211,6 +222,14 @@ struct SettingsView: View {
 
                 Divider()
 
+                // Say why half the window is greyed out, rather than leaving
+                // the reader to work out that a session is the reason.
+                if sessionLocked {
+                    Text(L("settings.sessionLockedCaption"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 Picker(selection: $sessionMode) {
                     Text(L("settings.mode.translate")).tag(SessionMode.translate)
                     Text(L("settings.mode.bidirectional")).tag(SessionMode.bidirectional)
@@ -219,8 +238,9 @@ struct SettingsView: View {
                 } label: { HelpLabel(L("settings.mode"), help: L("settings.modeCaption")) }
                 .onChange(of: sessionMode) {
                     Preferences.sessionMode = sessionMode
-                    AppDelegate.applyConfiguredLayout()
+                    AppDelegate.applySettingsChange()
                 }
+                .disabled(sessionLocked)
 
                 Picker(selection: $audioSource) {
                     Text(L("settings.audioSource.mic")).tag("mic")
@@ -230,16 +250,17 @@ struct SettingsView: View {
                 .onChange(of: audioSource) {
                     Preferences.audioSource = audioSource
                 }
+                .disabled(sessionLocked)
 
                 Picker(selection: $sourceID) {
                     ForEach(sourceOptions) { option in
                         Text(option.label).tag(option.id)
                     }
                 } label: { HelpLabel(sourceLanguageLabel, help: languageCaption) }
-                .disabled(sourceOptions.isEmpty)
+                .disabled(sourceOptions.isEmpty || sessionLocked)
                 .onChange(of: sourceID) {
                     Preferences.sourceLocaleID = sourceID
-                    AppDelegate.applyConfiguredLayout()
+                    AppDelegate.applySettingsChange()
                 }
                 // Transcription-only recognizes one language, so the second
                 // slot has no part to play: showing it (and an exchange with
@@ -252,10 +273,10 @@ struct SettingsView: View {
                             Text(option.label).tag(option.id)
                         }
                     }
-                    .disabled(targetOptions.isEmpty)
+                    .disabled(targetOptions.isEmpty || sessionLocked)
                     .onChange(of: targetID) {
                         Preferences.targetLocaleID = targetID
-                        AppDelegate.applyConfiguredLayout()
+                        AppDelegate.applySettingsChange()
                     }
                     // Bilingual transcription treats the two languages
                     // identically — both recognized, neither translated — so
@@ -265,6 +286,14 @@ struct SettingsView: View {
                         Button(L("settings.swapLanguages")) {
                             guard swapPossible else { return }
                             let source = sourceID
+                            // Store both halves before touching the fields.
+                            // The two change handlers below fire one at a
+                            // time, and the first of them would otherwise read
+                            // a pair that is briefly the same language twice —
+                            // a configuration the layout sync would act on,
+                            // collapsing the panels mid-swap.
+                            Preferences.sourceLocaleID = targetID
+                            Preferences.targetLocaleID = source
                             sourceID = targetID
                             targetID = source
                             // The lists are unified now, but a rescue entry (a
@@ -276,7 +305,7 @@ struct SettingsView: View {
                             }
                         }
                         .controlSize(.small)
-                        .disabled(!swapPossible)
+                        .disabled(!swapPossible || sessionLocked)
                         if !swapPossible, !targetOptions.isEmpty {
                             Text(L("settings.swapUnsupportedCaption"))
                                 .font(.caption)
@@ -325,14 +354,14 @@ struct SettingsView: View {
                         .controlSize(.small)
                     }
                 } label: { HelpLabel(L("settings.profiles"), help: L("settings.profilesCaption")) }
-                .disabled(!translationActive)
+                .disabled(!translationActive || sessionLocked)
 
 
                 Picker(L("settings.backend"), selection: $backend) {
                     Text(L("settings.backend.claude")).tag("claude")
                     Text(L("settings.backend.openai")).tag("openai")
                 }
-                .disabled(!translationActive)
+                .disabled(!translationActive || sessionLocked)
                 .onChange(of: backend) {
                     Preferences.translationBackend = backend
                 }
@@ -344,7 +373,7 @@ struct SettingsView: View {
                             .frame(width: 260)
                             .autocorrectionDisabled()
                     } label: { HelpLabel(L("settings.openaiBaseURL"), help: L("settings.openaiCaption")) }
-                    .disabled(!translationActive)
+                    .disabled(!translationActive || sessionLocked)
                     .onChange(of: openAIBaseURL) {
                         Preferences.openAIBaseURL = openAIBaseURL
                         // Keys are stored per host, so when the endpoint changes,
@@ -381,7 +410,7 @@ struct SettingsView: View {
                             }
                         }
                     }
-                    .disabled(!translationActive)
+                    .disabled(!translationActive || sessionLocked)
                     .onChange(of: openAIModel) {
                         Preferences.openAIModel = openAIModel
                     }
@@ -395,7 +424,7 @@ struct SettingsView: View {
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 260)
                     }
-                    .disabled(!translationActive)
+                    .disabled(!translationActive || sessionLocked)
                     .onChange(of: openAIKey) {
                         OpenAICompatSession.setAPIKey(openAIKey, forBaseURL: openAIBaseURL)
                         // The model list depends on the credentials too (plans
@@ -408,7 +437,7 @@ struct SettingsView: View {
                     }
 
                     Toggle(isOn: $provisionalEnabled) { HelpLabel(L("settings.provisional"), help: L("settings.provisionalCaption")) }
-                        .disabled(!translationActive)
+                        .disabled(!translationActive || sessionLocked)
                         .onChange(of: provisionalEnabled) {
                             Preferences.provisionalTranslationEnabled = provisionalEnabled
                         }
@@ -428,7 +457,7 @@ struct SettingsView: View {
                             .disabled(ClaudeBinary.detect() == nil)
                         }
                     } label: { HelpLabel(L("settings.claudePath"), help: L("settings.claudePathCaption")) }
-                    .disabled(!translationActive)
+                    .disabled(!translationActive || sessionLocked)
                     .onChange(of: claudePath) {
                         // A value equal to the detection result is not stored ("auto-follow":
                         // it keeps tracking even if the install location changes later).
@@ -446,7 +475,7 @@ struct SettingsView: View {
                             Text(claudeModelLabel(id)).tag(id)
                         }
                     } label: { HelpLabel(L("settings.claudeModel"), help: L("settings.modelCaption")) }
-                    .disabled(!translationActive)
+                    .disabled(!translationActive || sessionLocked)
                     .onChange(of: claudeModel) {
                         Preferences.claudeModel = claudeModel
                     }
@@ -466,7 +495,7 @@ struct SettingsView: View {
                         .disabled(promptTemplate == ClaudeSession.defaultPromptTemplate)
                     }
                 } label: { HelpLabel(L("settings.systemPrompt"), help: L("settings.promptCaption")) }
-                .disabled(!translationActive)  // the prompt is shared by both backends
+                .disabled(!translationActive || sessionLocked)  // the prompt is shared by both backends
                 .onChange(of: promptTemplate) {
                     Preferences.claudePromptOverride =
                         promptTemplate == ClaudeSession.defaultPromptTemplate ? nil : promptTemplate

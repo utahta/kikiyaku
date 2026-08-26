@@ -125,6 +125,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     }
 
     @objc private func showPanelAction() {
+        // Asked for by name: bring back whatever the current layout has,
+        // including a second panel closed earlier.
+        if AppState.shared.bidirectionalSession {
+            Self.restoreSecondPanel()
+        }
         Self.showPanel()
     }
 
@@ -324,25 +329,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     // NSWindow.delegate is a weak reference, so the AppDelegate keeps it alive.
     private static let panelDelegate = PanelDelegate()
 
+    /// The language-2 panel was closed by hand. Activation re-shows the main
+    /// panel by design (it is the app's face, and Cmd+Tab has to bring it
+    /// back), but dragging the second one back up against its owner's wishes
+    /// every time the app comes forward is another matter.
+    private static var secondPanelClosedByUser = false
+
     static func showPanel() {
         makePanel()
         panel?.orderFrontRegardless()
         // The second panel belongs to the current (bidirectional) history;
-        // re-show it together with the main one.
+        // re-show it together with the main one, unless it was closed by hand.
         if AppState.shared.bidirectionalSession {
-            showSecondPanel()
+            syncSecondPanel()
         }
     }
 
-    /// Called by the engine when a bidirectional session starts.
-    static func showSecondPanel() {
+    /// Brings the language-2 panel up because the layout calls for it. Used by
+    /// everything that happens *to* the user rather than at their request —
+    /// app activation, and the settings-driven layout sync — so a panel they
+    /// closed stays closed. Routing these through the explicit path is how a
+    /// change of font size or the end of an empty session used to put the
+    /// panel back on screen.
+    static func syncSecondPanel() {
+        guard !secondPanelClosedByUser else { return }
         makePanel2()
         panel2?.orderFrontRegardless()
     }
 
+    /// Brings it back at the user's request, or because a new session has
+    /// taken the layout over — both of which supersede an earlier close.
+    static func restoreSecondPanel() {
+        secondPanelClosedByUser = false
+        makePanel2()
+        panel2?.orderFrontRegardless()
+    }
+
+    /// Records that the language-2 panel was dismissed from its close button.
+    static func noteSecondPanelClosed() {
+        secondPanelClosedByUser = true
+    }
+
     /// Called by the engine when a classic session starts (the second panel's
-    /// content no longer matches the history).
+    /// content no longer matches the history), and by the layout sync when the
+    /// mode stops calling for two panels.
     static func hideSecondPanel() {
+        // The layout, not the user, is putting it away; whichever mode brings
+        // the two-panel layout back is setting it up afresh, and should not
+        // inherit a close from before.
+        secondPanelClosedByUser = false
         panel2?.orderOut(nil)
     }
 
@@ -450,23 +485,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// badge — is visible before any session starts. Called from the settings
     /// screen whenever the mode or the language pair changes. The sync only
     /// previews the configuration while nothing else binds the layout:
-    /// - not while a session runs, and not while one is starting (isStarting —
-    ///   the engine has already pinned the session's pair; re-labeling here
-    ///   would caption the running recognizers with the wrong languages),
+    /// - not while a session runs, and not while one is starting (the engine
+    ///   has already taken the session's settings; re-labeling here would
+    ///   caption the running recognizers with the wrong languages),
     /// - not while a finished session's history is still on display (its rows
     ///   were produced under the old pair; re-labeling would e.g. mark
     ///   Japanese translations as French and break the per-panel language
     ///   filter — the next start clears the history and re-syncs).
     /// The settings themselves change freely; they apply from the next start.
+    /// The user changed a setting that decides how the panel reads its rows —
+    /// the mode, or the language pair. The finished session's rows belong to
+    /// the configuration that produced them: sorted into panels by a different
+    /// pair they would be captioned wrongly, and the ones matching neither
+    /// language would vanish. So let go of them and let the layout follow the
+    /// settings. The transcript was written to disk at stop, which is what
+    /// makes this safe — the copy on screen is a convenience, not the record.
+    ///
+    /// Only for changes that alter how the history reads. A backend or profile
+    /// switch leaves every existing row looking exactly as it did, and taking
+    /// a meeting's transcript off the screen for it would be gratuitous.
+    static func applySettingsChange() {
+        let state = AppState.shared
+        // Session-defining settings are disabled while a session runs, so this
+        // is belt and braces — and it still matters for a `defaults write`
+        // landing mid-session.
+        guard state.phase == .idle else { return }
+        // The one transcript that exists nowhere else.
+        guard !Engine.shared.hasUnsavedTranscript else { return }
+        state.utterances.removeAll()
+        state.clearLive()
+        applyConfiguredLayout()
+    }
+
+    /// Points the panel layout at the current configuration, leaving the
+    /// history alone. Used where nothing was asked for — the end of a session,
+    /// a start that failed — so a transcript on screen is never swept up by
+    /// housekeeping.
     static func applyConfiguredLayout() {
         let state = AppState.shared
-        guard !state.isRunning,
-              !Engine.shared.isStarting,
-              state.utterances.isEmpty else { return }
-        state.bidirectionalSession = Preferences.bidirectionalConfigured
+        guard state.phase == .idle else { return }
+        // Rows on screen hold the layout that produced them. A settings change
+        // clears them first, so this only ever declines to act on a drift
+        // introduced from outside the app.
+        guard state.utterances.isEmpty else { return }
+        let configured = Preferences.bidirectionalConfigured
+        state.bidirectionalSession = configured
         state.pairLanguageIDs = [Preferences.sourceLocaleID, Preferences.targetLocaleID]
         if state.bidirectionalSession {
-            showSecondPanel()
+            syncSecondPanel()
         } else {
             hideSecondPanel()
         }
@@ -529,6 +595,9 @@ private final class FirstMouseHostingView<Content: View>: NSHostingView<Content>
 @MainActor
 private final class PanelDelegate: NSObject, NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if sender === AppDelegate.panel2 {
+            AppDelegate.noteSecondPanelClosed()
+        }
         sender.orderOut(nil)
         return false
     }
