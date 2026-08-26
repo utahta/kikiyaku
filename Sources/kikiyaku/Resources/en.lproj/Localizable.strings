@@ -1,5 +1,6 @@
 /* Menu */
 "menu.showPanel" = "Show Panel";
+"menu.arrangePanels" = "Arrange Panels Side by Side";
 "menu.openFolder" = "Open Save Folder";
 "menu.settings" = "Settings…";
 "menu.quit" = "Quit Kikiyaku";
@@ -17,6 +18,7 @@
 "panel.start" = "Start";
 "panel.stop" = "Stop";
 "panel.skippedConfidence" = "Translation skipped (confidence %@)";
+"panel.translating" = "Translating";
 "panel.provisionalKept" = "Provisional (final translation failed)";
 
 /* Status */
@@ -55,6 +57,7 @@
 "error.languageUnsupported" = "Speech recognition does not support %@ — choose a supported language in the settings";
 
 /* Settings */
+"settings.help" = "Help";
 "settings.language" = "Display language";
 "settings.language.system" = "Follow System";
 "settings.languageRestartCaption" = "Takes effect after relaunching the app.";
@@ -63,18 +66,23 @@
 "settings.audioSource.mic" = "Microphone";
 "settings.audioSource.system" = "System audio (other apps)";
 "settings.audioSource.both" = "Both (mic + system audio)";
-"settings.audioSourceCaption" = "System audio transcribes what your Mac is playing — such as remote participants in an online meeting (your own voice is not captured). Both captures the two at once: the remote side from system audio, your own voice from the microphone (earphones recommended so the mic does not hear the speakers). The first use asks for system audio recording permission. Takes effect from the next Start.";
-"settings.sourceLanguage" = "Language 1";
-"settings.targetLanguage" = "Language 2";
+"settings.audioSourceCaption" = "System audio transcribes what your Mac is playing — such as remote participants in an online meeting (your own voice is not captured). Both captures the two at once: the remote side from system audio, your own voice from the microphone (earphones recommended so the mic does not hear the speakers). The first use asks for system audio recording permission. Takes effect the next time you start.";
+"settings.language.source.translate" = "Source language";
+"settings.language.target.translate" = "Target language";
+"settings.language.source.transcribe" = "Language";
+"settings.language.source.pair" = "Language 1";
+"settings.language.target.pair" = "Language 2";
 "settings.swapLanguages" = "⇄ Swap languages";
-"settings.swapUnsupportedCaption" = "The current language 2 is not supported by speech recognition, so the pair cannot be swapped.";
-"settings.languageCaption" = "One-direction modes recognize language 1; bidirectional modes recognize both. Language changes take effect from the next Start.";
+"settings.swapUnsupportedCaption" = "Speech recognition does not support the language that would move into the recognition slot, so the pair cannot be swapped.";
+"settings.languageCaption.translate" = "The source language is recognized from speech and translated into the target language. Changes take effect the next time you start.";
+"settings.languageCaption.transcribe" = "The selected language is recognized from speech. Changes take effect the next time you start.";
+"settings.languageCaption.pair" = "Both languages are recognized, and each utterance is judged to be one or the other. Changes take effect the next time you start.";
 "settings.mode" = "Mode";
-"settings.mode.translate" = "One-direction translation (language 1 → 2)";
-"settings.mode.bidirectional" = "Bidirectional translation (language 1 ⇄ 2)";
-"settings.mode.transcribe" = "Transcription only (language 1)";
-"settings.mode.bilingual" = "Bilingual transcription (languages 1 + 2)";
-"settings.modeCaption" = "One-direction translation: utterances in language 1 are translated into language 2 by the selected backend. Bidirectional translation: both languages are recognized, each utterance's language is decided by recognition confidence, and it is translated into the other language (for meetings where both are spoken; provisional translation is disabled). Transcription only: language 1 is transcribed without translation (for minute-taking or saving quota). Bilingual transcription: both languages are recognized and recorded without translation. Takes effect from the next Start.";
+"settings.mode.translate" = "One-direction translation";
+"settings.mode.bidirectional" = "Bidirectional translation";
+"settings.mode.transcribe" = "Transcription only";
+"settings.mode.bilingual" = "Bilingual transcription";
+"settings.modeCaption" = "One-direction translation: utterances in the source language are translated into the target language by the selected backend. Bidirectional translation: languages 1 and 2 are both recognized, each utterance's language is decided by recognition confidence, and it is translated into the other language (for meetings where both are spoken; provisional translation is disabled). Transcription only: the selected language is transcribed without translation (for minute-taking or saving quota). Bilingual transcription: both languages are recognized and recorded without translation. Takes effect the next time you start.";
 "settings.backend" = "Translation backend";
 "settings.backend.claude" = "Claude (CLI)";
 "settings.backend.openai" = "OpenAI-compatible (API / local)";
@@ -89,9 +97,9 @@
 "settings.profiles.save" = "Save";
 "settings.cancel" = "Cancel";
 "settings.profiles.keyCaption" = "The key is stored in the Keychain for this endpoint, not inside the profile.";
-"settings.profilesCaption" = "Save backend configurations (backend, endpoint URL, models) under a name and switch with Apply. Add… starts from the current settings. API keys are stored per endpoint in the Keychain and follow the switch automatically. Applying takes effect from the next Start.";
+"settings.profilesCaption" = "Save backend configurations (backend, endpoint URL, models) under a name and switch with Apply. Add… starts from the current settings. API keys are stored per endpoint in the Keychain and follow the switch automatically. Applying takes effect the next time you start.";
 "settings.provisional" = "Provisional translation per sentence";
-"settings.provisionalCaption" = "While a long utterance is still in progress, translates the recognized part each time a sentence boundary is detected and shows it in a pale style below the live text (replaced by the final translation when the utterance finalizes). Available with the OpenAI-compatible backend only, and disabled in bidirectional mode. Takes effect from the next Start.";
+"settings.provisionalCaption" = "While a long utterance is still in progress, translates the recognized part each time a sentence boundary is detected and shows it in a pale style below the live text (replaced by the final translation when the utterance finalizes). Available with the OpenAI-compatible backend only, and disabled in bidirectional mode. Takes effect the next time you start.";
 "settings.openaiBaseURL" = "Endpoint URL";
 "settings.openaiModel" = "Model name";
 "settings.openaiKey" = "API key";
@@ -99,21 +107,21 @@
 "settings.openaiModelsPick" = "Choose";
 "settings.openaiModelsRefresh" = "Refresh";
 "settings.openaiModelsError" = "Failed to fetch the model list: %@";
-"settings.openaiCaption" = "Connects to cloud OpenAI (https://api.openai.com, key required) or local servers such as LM Studio and llama.cpp (e.g. http://localhost:1234, no key needed). Keys are stored in the Keychain per endpoint and are only ever sent to that endpoint. For local Qwen models, prepending /no_think to the system prompt speeds things up. Takes effect from the next Start.";
+"settings.openaiCaption" = "Connects to cloud OpenAI (https://api.openai.com, key required) or local servers such as LM Studio and llama.cpp (e.g. http://localhost:1234, no key needed). Keys are stored in the Keychain per endpoint and are only ever sent to that endpoint. For local Qwen models, prepending /no_think to the system prompt speeds things up. Takes effect the next time you start.";
 "settings.claudePath" = "claude CLI path";
 "settings.claudePathPlaceholder" = "Auto-detect";
 "settings.claudePathDetect" = "Auto-detect";
 "settings.claudePathDetected" = "Resolved: %@";
 "settings.claudePathMissing" = "claude CLI not found (check the path, or press Auto-detect)";
-"settings.claudePathCaption" = "The detected path is filled in automatically. Edit it to use a custom path, or press Auto-detect to restore the detected one. Takes effect from the next Start.";
+"settings.claudePathCaption" = "The detected path is filled in automatically. Edit it to use a custom path, or press Auto-detect to restore the detected one. Takes effect the next time you start.";
 "settings.claudeModel" = "Claude model";
 "settings.model.sonnet" = "Sonnet 5 (default, balanced)";
 "settings.model.opus" = "Opus 5 (best quality)";
 "settings.model.haiku" = "Haiku 4.5 (lowest cost)";
-"settings.modelCaption" = "Latency is similar across all three (about 2–3 s per utterance). Opus is best at recovering mis-recognitions; Haiku uses the least quota. Takes effect from the next Start.";
+"settings.modelCaption" = "Latency is similar across all three (about 2–3 s per utterance). Opus is best at recovering mis-recognitions; Haiku uses the least quota. Takes effect the next time you start.";
 "settings.systemPrompt" = "System prompt";
 "settings.resetDefault" = "Reset to Default";
-"settings.promptCaption" = "Utterances are sent wrapped in a <u> tag whose source/target attributes carry the translation direction as BCP-47 codes. When customizing, keep the premise of translating into the target attribute's language — one prompt then serves both the one-direction and bidirectional modes — and keep the convention that utterances arrive wrapped in <u>...</u> tags (without it, the model replies conversationally instead of translating). Takes effect from the next Start.";
+"settings.promptCaption" = "Utterances are sent wrapped in a <u> tag whose source/target attributes carry the translation direction as BCP-47 codes. When customizing, keep the premise of translating into the target attribute's language — one prompt then serves both the one-direction and bidirectional modes — and keep the convention that utterances arrive wrapped in <u>...</u> tags (without it, the model replies conversationally instead of translating). Takes effect the next time you start.";
 "settings.newestOnTop" = "Show newest utterances on top";
 "settings.newestOnTopCaption" = "On: in-progress text is pinned in a fixed area at the top and finalized utterances are listed newest first (your eyes stay in one place). Off: appended at the bottom, following the bottom edge. Takes effect immediately, so you can compare while running.";
 "settings.liveLines" = "Live area lines";

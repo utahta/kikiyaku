@@ -1,6 +1,83 @@
 import AppKit
 import SwiftUI
 
+/// The explanation for one setting, behind a small "?" that shows it while the
+/// pointer rests on it. Written out in full under every control, these
+/// paragraphs were most of the settings window's height and pushed the
+/// controls themselves apart; the text is worth reading once and then never
+/// again, which is exactly what a hover reveal is for.
+private struct HelpTip: View {
+    let text: String
+    /// Shown while the pointer rests on the icon.
+    @State private var hovering = false
+    /// Held open by activating the icon — the route for anyone driving the
+    /// settings from the keyboard, who has no pointer to rest anywhere.
+    @State private var pinned = false
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    private var presented: Binding<Bool> {
+        Binding(
+            get: { hovering || pinned },
+            // The popover also closes itself (Escape, a click outside); clear
+            // both sources so it cannot come straight back.
+            set: { isPresented in
+                if !isPresented {
+                    hovering = false
+                    pinned = false
+                }
+            }
+        )
+    }
+
+    var body: some View {
+        // A button, not a bare image: the explanations moved in here wholesale,
+        // so they have to be reachable with Full Keyboard Access — an Image
+        // takes no focus and answers no Return.
+        Button {
+            pinned.toggle()
+        } label: {
+            Image(systemName: "questionmark.circle")
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        // Presented below the icon, so it never sits under the pointer —
+        // covering the icon would end the hover and flicker the popover.
+        .popover(isPresented: presented, arrowEdge: .bottom) {
+            Text(text)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(width: 340, alignment: .leading)
+                .padding(12)
+        }
+        .accessibilityLabel(L("settings.help"))
+        .accessibilityHint(text)
+    }
+}
+
+/// A setting's label with its explanation one hover away. The icon rides in
+/// the form's label column, so the whole column of them lines up however wide
+/// the controls beside them are.
+private struct HelpLabel: View {
+    let title: String
+    let help: String
+
+    init(_ title: String, help: String) {
+        self.title = title
+        self.help = help
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(title)
+            HelpTip(help)
+        }
+    }
+}
+
 struct SettingsView: View {
     @State private var directoryPath = TranscriptStore.directory.path
     @State private var audioSource = Preferences.audioSource
@@ -17,6 +94,34 @@ struct SettingsView: View {
     /// off leave the whole backend configuration inert, so its controls dim.
     private var translationActive: Bool {
         sessionMode.translates
+    }
+
+    // The pair of languages plays a different role in each mode, so the two
+    // pickers say what they actually are rather than carrying the neutral
+    // "language 1 / language 2" everywhere. Only the bidirectional modes,
+    // where neither language leads, need the neutral pair.
+
+    private var sourceLanguageLabel: String {
+        switch sessionMode {
+        case .translate: L("settings.language.source.translate")
+        case .transcribe: L("settings.language.source.transcribe")
+        case .bidirectional, .bilingual: L("settings.language.source.pair")
+        }
+    }
+
+    private var targetLanguageLabel: String {
+        switch sessionMode {
+        case .translate: L("settings.language.target.translate")
+        case .transcribe, .bidirectional, .bilingual: L("settings.language.target.pair")
+        }
+    }
+
+    private var languageCaption: String {
+        switch sessionMode {
+        case .translate: L("settings.languageCaption.translate")
+        case .transcribe: L("settings.languageCaption.transcribe")
+        case .bidirectional, .bilingual: L("settings.languageCaption.pair")
+        }
     }
     @State private var backend = Preferences.translationBackend
     @State private var profiles = Preferences.backendProfiles
@@ -106,78 +211,83 @@ struct SettingsView: View {
 
                 Divider()
 
-                Picker(L("settings.audioSource"), selection: $audioSource) {
+                Picker(selection: $sessionMode) {
+                    Text(L("settings.mode.translate")).tag(SessionMode.translate)
+                    Text(L("settings.mode.bidirectional")).tag(SessionMode.bidirectional)
+                    Text(L("settings.mode.transcribe")).tag(SessionMode.transcribe)
+                    Text(L("settings.mode.bilingual")).tag(SessionMode.bilingual)
+                } label: { HelpLabel(L("settings.mode"), help: L("settings.modeCaption")) }
+                .onChange(of: sessionMode) {
+                    Preferences.sessionMode = sessionMode
+                    AppDelegate.applyConfiguredLayout()
+                }
+
+                Picker(selection: $audioSource) {
                     Text(L("settings.audioSource.mic")).tag("mic")
                     Text(L("settings.audioSource.system")).tag("system")
                     Text(L("settings.audioSource.both")).tag("both")
-                }
+                } label: { HelpLabel(L("settings.audioSource"), help: L("settings.audioSourceCaption")) }
                 .onChange(of: audioSource) {
                     Preferences.audioSource = audioSource
                 }
-                Text(L("settings.audioSourceCaption"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
 
-                Picker(L("settings.sourceLanguage"), selection: $sourceID) {
+                Picker(selection: $sourceID) {
                     ForEach(sourceOptions) { option in
                         Text(option.label).tag(option.id)
                     }
-                }
+                } label: { HelpLabel(sourceLanguageLabel, help: languageCaption) }
                 .disabled(sourceOptions.isEmpty)
                 .onChange(of: sourceID) {
                     Preferences.sourceLocaleID = sourceID
                     AppDelegate.applyConfiguredLayout()
                 }
-                Picker(L("settings.targetLanguage"), selection: $targetID) {
-                    ForEach(targetOptions) { option in
-                        Text(option.label).tag(option.id)
+                // Transcription-only recognizes one language, so the second
+                // slot has no part to play: showing it (and an exchange with
+                // it) would invite the reader to set something this mode
+                // never reads. The stored value is untouched and comes back
+                // with the mode that uses it.
+                if sessionMode != .transcribe {
+                    Picker(targetLanguageLabel, selection: $targetID) {
+                        ForEach(targetOptions) { option in
+                            Text(option.label).tag(option.id)
+                        }
+                    }
+                    .disabled(targetOptions.isEmpty)
+                    .onChange(of: targetID) {
+                        Preferences.targetLocaleID = targetID
+                        AppDelegate.applyConfiguredLayout()
+                    }
+                    // Bilingual transcription treats the two languages
+                    // identically — both recognized, neither translated — so
+                    // an exchange between them answers no question the reader
+                    // would think to ask.
+                    if sessionMode != .bilingual {
+                        Button(L("settings.swapLanguages")) {
+                            guard swapPossible else { return }
+                            let source = sourceID
+                            sourceID = targetID
+                            targetID = source
+                            // The lists are unified now, but a rescue entry (a
+                            // language the recognizer does not support) can
+                            // still land in the second slot; keep the picker
+                            // from breaking.
+                            if !targetOptions.contains(where: { $0.id == targetID }) {
+                                targetOptions.append(Preferences.option(id: targetID))
+                            }
+                        }
+                        .controlSize(.small)
+                        .disabled(!swapPossible)
+                        if !swapPossible, !targetOptions.isEmpty {
+                            Text(L("settings.swapUnsupportedCaption"))
+                                .font(.caption)
+                                .foregroundStyle(.tertiary)
+                        }
                     }
                 }
-                .disabled(targetOptions.isEmpty)
-                .onChange(of: targetID) {
-                    Preferences.targetLocaleID = targetID
-                    AppDelegate.applyConfiguredLayout()
-                }
-                Button(L("settings.swapLanguages")) {
-                    guard swapPossible else { return }
-                    let source = sourceID
-                    sourceID = targetID
-                    targetID = source
-                    // The lists are unified now, but a rescue entry (a stored
-                    // language the recognizer does not support) can still land
-                    // in the language-2 slot; keep the picker from breaking.
-                    if !targetOptions.contains(where: { $0.id == targetID }) {
-                        targetOptions.append(Preferences.option(id: targetID))
-                    }
-                }
-                .controlSize(.small)
-                .disabled(!swapPossible)
-                if !swapPossible, !targetOptions.isEmpty {
-                    Text(L("settings.swapUnsupportedCaption"))
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                Text(L("settings.languageCaption"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
 
                 Divider()
 
-                Picker(L("settings.mode"), selection: $sessionMode) {
-                    Text(L("settings.mode.translate")).tag(SessionMode.translate)
-                    Text(L("settings.mode.bidirectional")).tag(SessionMode.bidirectional)
-                    Text(L("settings.mode.transcribe")).tag(SessionMode.transcribe)
-                    Text(L("settings.mode.bilingual")).tag(SessionMode.bilingual)
-                }
-                .onChange(of: sessionMode) {
-                    Preferences.sessionMode = sessionMode
-                    AppDelegate.applyConfiguredLayout()
-                }
-                Text(L("settings.modeCaption"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-
-                LabeledContent(L("settings.profiles")) {
+                LabeledContent {
                     HStack {
                         if !profiles.isEmpty {
                             Menu(L("settings.profiles.apply")) {
@@ -214,11 +324,8 @@ struct SettingsView: View {
                         }
                         .controlSize(.small)
                     }
-                }
+                } label: { HelpLabel(L("settings.profiles"), help: L("settings.profilesCaption")) }
                 .disabled(!translationActive)
-                Text(L("settings.profilesCaption"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
 
 
                 Picker(L("settings.backend"), selection: $backend) {
@@ -231,12 +338,12 @@ struct SettingsView: View {
                 }
 
                 if backend == "openai" {
-                    LabeledContent(L("settings.openaiBaseURL")) {
+                    LabeledContent {
                         TextField("", text: $openAIBaseURL, prompt: Text(verbatim: "https://api.openai.com"))
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 260)
                             .autocorrectionDisabled()
-                    }
+                    } label: { HelpLabel(L("settings.openaiBaseURL"), help: L("settings.openaiCaption")) }
                     .disabled(!translationActive)
                     .onChange(of: openAIBaseURL) {
                         Preferences.openAIBaseURL = openAIBaseURL
@@ -299,22 +406,16 @@ struct SettingsView: View {
                         modelFetchError = nil
                         fetchingModels = false
                     }
-                    Text(L("settings.openaiCaption"))
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
 
-                    Toggle(L("settings.provisional"), isOn: $provisionalEnabled)
+                    Toggle(isOn: $provisionalEnabled) { HelpLabel(L("settings.provisional"), help: L("settings.provisionalCaption")) }
                         .disabled(!translationActive)
                         .onChange(of: provisionalEnabled) {
                             Preferences.provisionalTranslationEnabled = provisionalEnabled
                         }
-                    Text(L("settings.provisionalCaption"))
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
                 }
 
                 if backend == "claude" {
-                    LabeledContent(L("settings.claudePath")) {
+                    LabeledContent {
                         HStack {
                             TextField("", text: $claudePath, prompt: Text(L("settings.claudePathPlaceholder")))
                                 .textFieldStyle(.roundedBorder)
@@ -326,7 +427,7 @@ struct SettingsView: View {
                             .controlSize(.small)
                             .disabled(ClaudeBinary.detect() == nil)
                         }
-                    }
+                    } label: { HelpLabel(L("settings.claudePath"), help: L("settings.claudePathCaption")) }
                     .disabled(!translationActive)
                     .onChange(of: claudePath) {
                         // A value equal to the detection result is not stored ("auto-follow":
@@ -339,27 +440,21 @@ struct SettingsView: View {
                     Text(resolvedClaudePath.map { LF("settings.claudePathDetected", $0) } ?? L("settings.claudePathMissing"))
                         .font(.caption)
                         .foregroundStyle(resolvedClaudePath == nil ? AnyShapeStyle(Color.orange) : AnyShapeStyle(.tertiary))
-                    Text(L("settings.claudePathCaption"))
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
 
-                    Picker(L("settings.claudeModel"), selection: $claudeModel) {
+                    Picker(selection: $claudeModel) {
                         ForEach(claudeModelOptions, id: \.self) { id in
                             Text(claudeModelLabel(id)).tag(id)
                         }
-                    }
+                    } label: { HelpLabel(L("settings.claudeModel"), help: L("settings.modelCaption")) }
                     .disabled(!translationActive)
                     .onChange(of: claudeModel) {
                         Preferences.claudeModel = claudeModel
                     }
-                    Text(L("settings.modelCaption"))
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
                 }
 
                 Divider()
 
-                LabeledContent(L("settings.systemPrompt")) {
+                LabeledContent {
                     VStack(alignment: .leading, spacing: 6) {
                         TextEditor(text: $promptTemplate)
                             .font(.system(size: 11))
@@ -370,26 +465,20 @@ struct SettingsView: View {
                         }
                         .disabled(promptTemplate == ClaudeSession.defaultPromptTemplate)
                     }
-                }
+                } label: { HelpLabel(L("settings.systemPrompt"), help: L("settings.promptCaption")) }
                 .disabled(!translationActive)  // the prompt is shared by both backends
                 .onChange(of: promptTemplate) {
                     Preferences.claudePromptOverride =
                         promptTemplate == ClaudeSession.defaultPromptTemplate ? nil : promptTemplate
                 }
-                Text(L("settings.promptCaption"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
 
                 Divider()
 
-                Toggle(L("settings.newestOnTop"), isOn: $newestOnTop)
+                Toggle(isOn: $newestOnTop) { HelpLabel(L("settings.newestOnTop"), help: L("settings.newestOnTopCaption")) }
                     .onChange(of: newestOnTop) {
                         Preferences.newestOnTop = newestOnTop
                         AppState.shared.newestOnTop = newestOnTop
                     }
-                Text(L("settings.newestOnTopCaption"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
 
                 LabeledContent(L("settings.liveLines")) {
                     Stepper(value: $liveLines, in: 1...8) {
@@ -403,7 +492,7 @@ struct SettingsView: View {
                     AppState.shared.liveLines = liveLines
                 }
 
-                LabeledContent(L("settings.fontSize")) {
+                LabeledContent {
                     HStack {
                         Slider(value: $fontSize, in: 10...32, step: 1)
                             .frame(width: 200)
@@ -411,16 +500,13 @@ struct SettingsView: View {
                             .monospacedDigit()
                             .frame(width: 40, alignment: .trailing)
                     }
-                }
+                } label: { HelpLabel(L("settings.fontSize"), help: L("settings.fontSizeCaption")) }
                 .onChange(of: fontSize) {
                     Preferences.fontSize = fontSize
                     AppState.shared.fontSize = fontSize
                 }
-                Text(L("settings.fontSizeCaption"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
 
-                Toggle(L("settings.sourceText"), isOn: $sourceTextVisible)
+                Toggle(isOn: $sourceTextVisible) { HelpLabel(L("settings.sourceText"), help: L("settings.sourceTextCaption")) }
                     .onChange(of: sourceTextVisible) {
                         Preferences.sourceTextVisible = sourceTextVisible
                         AppState.shared.sourceTextVisible = sourceTextVisible
@@ -439,11 +525,8 @@ struct SettingsView: View {
                     Preferences.sourceFontSize = sourceFontSize
                     AppState.shared.sourceFontSize = sourceFontSize
                 }
-                Text(L("settings.sourceTextCaption"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
 
-                LabeledContent(L("settings.opacity")) {
+                LabeledContent {
                     HStack {
                         Slider(value: $panelOpacity, in: 0.3...1.0, step: 0.05)
                             .frame(width: 200)
@@ -451,18 +534,15 @@ struct SettingsView: View {
                             .monospacedDigit()
                             .frame(width: 40, alignment: .trailing)
                     }
-                }
+                } label: { HelpLabel(L("settings.opacity"), help: L("settings.opacityCaption")) }
                 .onChange(of: panelOpacity) {
                     Preferences.panelOpacity = panelOpacity
                     AppState.shared.panelOpacity = panelOpacity
                 }
-                Text(L("settings.opacityCaption"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
 
                 Divider()
 
-                LabeledContent(L("settings.threshold")) {
+                LabeledContent {
                     HStack {
                         Slider(value: $confidenceThreshold, in: 0...0.9, step: 0.05)
                             .frame(width: 200)
@@ -470,7 +550,7 @@ struct SettingsView: View {
                             .monospacedDigit()
                             .frame(width: 40, alignment: .trailing)
                     }
-                }
+                } label: { HelpLabel(L("settings.threshold"), help: L("settings.thresholdCaption")) }
                 .onChange(of: confidenceThreshold) {
                     Preferences.confidenceThreshold = confidenceThreshold
                 }
@@ -483,28 +563,22 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Text(L("settings.thresholdCaption"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
 
                 Divider()
 
-                LabeledContent(L("settings.autoStop")) {
+                LabeledContent {
                     Stepper(value: $autoStopMinutes, in: 0...120, step: 5) {
                         Text(autoStopMinutes == 0 ? L("settings.off") : LF("settings.autoStopValue", autoStopMinutes))
                             .monospacedDigit()
                     }
-                }
+                } label: { HelpLabel(L("settings.autoStop"), help: L("settings.autoStopCaption")) }
                 .onChange(of: autoStopMinutes) {
                     Preferences.autoStopMinutes = autoStopMinutes
                 }
-                Text(L("settings.autoStopCaption"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
 
                 Divider()
 
-                LabeledContent(L("settings.saveDir")) {
+                LabeledContent {
                     VStack(alignment: .leading, spacing: 8) {
                         Text(directoryPath)
                             .font(.callout)
@@ -521,10 +595,7 @@ struct SettingsView: View {
                             .disabled(directoryPath == TranscriptStore.defaultDirectory.path)
                         }
                     }
-                }
-                Text(L("settings.saveDirCaption"))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
+                } label: { HelpLabel(L("settings.saveDir"), help: L("settings.saveDirCaption")) }
             }
             .padding(20)
             .frame(width: 480)

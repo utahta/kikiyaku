@@ -41,6 +41,34 @@ struct Utterance: Identifiable, Sendable {
     }
 }
 
+/// Where an utterance stands on the way to its translation.
+enum TranslationState {
+    /// A translation is genuinely on its way.
+    case pending
+    case completed
+    /// Recognized too poorly to be worth translating.
+    case skipped
+    /// Attempted and given up on.
+    case failed
+    /// This session does not translate at all.
+    case none
+}
+
+extension Utterance {
+    /// Judged against the session too, because the utterance alone cannot say
+    /// it: a missing translation means "one is coming" only while the session
+    /// is translating. Read from `translation == nil` alone — as four separate
+    /// places in the UI once did, each with its own set of extra conditions —
+    /// a transcription-only session, a skipped utterance and a failed one all
+    /// masquerade as work in progress.
+    func translationState(translating: Bool) -> TranslationState {
+        if translation != nil { return .completed }
+        if translationSkipped { return .skipped }
+        if finalTranslationFailed { return .failed }
+        return translating ? .pending : .none
+    }
+}
+
 /// Key of one live-text slot: a capture channel × recognized language.
 struct LiveKey: Hashable, Sendable {
     let channel: String

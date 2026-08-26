@@ -26,7 +26,7 @@ struct KikiyakuApp: App {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     static private(set) var panel: NSPanel?
 
     private var statusItem: NSStatusItem?
@@ -98,6 +98,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         show.target = self
         menu.addItem(show)
 
+        let arrange = NSMenuItem(title: L("menu.arrangePanels"), action: #selector(arrangePanels), keyEquivalent: "")
+        arrange.target = self
+        menu.addItem(arrange)
+
         menu.addItem(.separator())
 
         let folder = NSMenuItem(title: L("menu.openFolder"), action: #selector(openFolder), keyEquivalent: "")
@@ -122,6 +126,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func showPanelAction() {
         Self.showPanel()
+    }
+
+    /// The arrange command only means something with two panels on screen —
+    /// a bidirectional session (or its finished history).
+    nonisolated func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+        guard menuItem.action == #selector(arrangePanels) else { return true }
+        return MainActor.assumeIsolated { Self.panel2?.isVisible == true }
     }
 
     @objc private func openFolder() {
@@ -335,6 +346,105 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         panel2?.orderOut(nil)
     }
 
+    /// Snap distance for the side-by-side alignment, and the gap the two
+    /// panels keep once snapped.
+    private static let snapDistance: CGFloat = 22
+    private static let snapGap: CGFloat = 8
+
+    /// Suppresses the move notification caused by our own snap, which would
+    /// otherwise be treated as a fresh drag and re-run the calculation.
+    private static var isSnapping = false
+
+    /// While one panel is dragged near the other's side, pull it into exact
+    /// side-by-side alignment: touching horizontally, tops level, same
+    /// height. The two panels read as one caption surface when they line up,
+    /// and lining them up by hand — across two independent windows, matching
+    /// both origin and height — is fiddly enough that people give up and live
+    /// with a ragged pair.
+    static func snapPanels(moved: NSWindow) {
+        guard !isSnapping,
+              let main = panel, let second = panel2,
+              main.isVisible, second.isVisible else { return }
+        let other = moved === main ? second : main
+        guard moved === main || moved === second else { return }
+
+        let movedFrame = moved.frame
+        let otherFrame = other.frame
+        // Only when the drag ends up beside the other panel, not on top of it:
+        // measure the horizontal gap on whichever side the window is on.
+        let onRight = movedFrame.midX >= otherFrame.midX
+        let gap = onRight
+            ? movedFrame.minX - otherFrame.maxX
+            : otherFrame.minX - movedFrame.maxX
+        guard abs(gap - snapGap) <= snapDistance else { return }
+        // ...and only when the tops are already roughly level, so a panel
+        // deliberately parked above or below is left alone.
+        guard abs(movedFrame.maxY - otherFrame.maxY) <= snapDistance else { return }
+
+        let x = onRight ? otherFrame.maxX + snapGap : otherFrame.minX - movedFrame.width - snapGap
+        let target = NSRect(
+            x: x,
+            y: otherFrame.minY,
+            width: movedFrame.width,
+            height: otherFrame.height
+        )
+        guard target != movedFrame else { return }
+        isSnapping = true
+        moved.setFrame(target, display: true)
+        isSnapping = false
+    }
+
+    /// Menu command: park the language-2 panel against the main one, whatever
+    /// state the two are in. The manual escape hatch for a pair that ended up
+    /// on different screens, or that the drag-snap never got close enough to
+    /// catch.
+    @objc private func arrangePanels() {
+        Self.showPanel()
+        guard let main = Self.panel, let second = Self.panel2, second.isVisible else { return }
+        guard let visible = (main.screen ?? NSScreen.main)?.visibleFrame else { return }
+
+        let gap = Self.snapGap
+        let mainFrame = main.frame
+        let secondFrame = second.frame
+        // Keep whichever side the second panel is already on; only its first
+        // appearance picks a side for it.
+        let secondOnRight = secondFrame.midX > mainFrame.midX
+
+        // The pair moves as one. Placing the second panel around a main panel
+        // that stays put fails whenever the main one sits too near the middle
+        // for either side to have room — even when the two would fit side by
+        // side perfectly well a little to the left or right.
+        var mainWidth = mainFrame.width
+        var secondWidth = secondFrame.width
+        if mainWidth + gap + secondWidth > visible.width {
+            // Wider than the screen however they are placed: give each half of
+            // what there is, down to the panel's own minimum, rather than
+            // leaving the command with nothing to do but overlap them.
+            let half = max(300, (visible.width - gap) / 2)
+            mainWidth = half
+            secondWidth = half
+        }
+        let groupWidth = mainWidth + gap + secondWidth
+
+        // Start from where the main panel already is, then slide the pair as a
+        // whole until it is on screen.
+        var groupX = secondOnRight ? mainFrame.minX : mainFrame.minX - secondWidth - gap
+        groupX = min(max(groupX, visible.minX), visible.maxX - groupWidth)
+
+        let height = min(mainFrame.height, visible.height)
+        let y = min(max(mainFrame.minY, visible.minY), visible.maxY - height)
+
+        let mainX = secondOnRight ? groupX : groupX + secondWidth + gap
+        let secondX = secondOnRight ? groupX + mainWidth + gap : groupX
+
+        Self.isSnapping = true
+        main.setFrame(
+            NSRect(x: mainX, y: y, width: mainWidth, height: height), display: true)
+        second.setFrame(
+            NSRect(x: secondX, y: y, width: secondWidth, height: height), display: true)
+        Self.isSnapping = false
+    }
+
     /// Re-syncs the panel layout (one classic panel vs. two language panels)
     /// with the configured mode, so the layout — and each panel's language
     /// badge — is visible before any session starts. Called from the settings
@@ -421,5 +531,14 @@ private final class PanelDelegate: NSObject, NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         sender.orderOut(nil)
         return false
+    }
+
+    /// Fires continuously while a panel is dragged (both panels are moved by
+    /// their background), which is what gives the snap its sticky feel: the
+    /// window keeps following the pointer until it enters the snap zone, then
+    /// holds the aligned frame.
+    func windowDidMove(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        AppDelegate.snapPanels(moved: window)
     }
 }

@@ -1,5 +1,6 @@
 /* Menu */
 "menu.showPanel" = "パネルを表示";
+"menu.arrangePanels" = "パネルを左右に整列";
 "menu.openFolder" = "保存先フォルダを開く";
 "menu.settings" = "設定…";
 "menu.quit" = "Kikiyaku を終了";
@@ -17,6 +18,7 @@
 "panel.start" = "開始";
 "panel.stop" = "停止";
 "panel.skippedConfidence" = "翻訳スキップ（信頼度 %@）";
+"panel.translating" = "翻訳中";
 "panel.provisionalKept" = "暫定訳（確定訳の取得に失敗）";
 
 /* Status */
@@ -55,6 +57,7 @@
 "error.languageUnsupported" = "音声認識が %@ に対応していません（設定で対応言語を選んでください）";
 
 /* Settings */
+"settings.help" = "説明";
 "settings.language" = "表示言語";
 "settings.language.system" = "システムに従う";
 "settings.languageRestartCaption" = "変更は再起動後に反映されます。";
@@ -63,18 +66,23 @@
 "settings.audioSource.mic" = "マイク";
 "settings.audioSource.system" = "システム音声（他アプリの音）";
 "settings.audioSource.both" = "両方（マイク＋システム音声）";
-"settings.audioSourceCaption" = "システム音声を選ぶと、オンライン会議の相手の声など Mac が再生している音を文字起こしします（自分の声は入りません）。「両方」は2つを同時にキャプチャします（相手の声はシステム音声から、自分の声はマイクから。マイクがスピーカーの音を拾わないようイヤホンの利用を推奨）。初回はシステム音声の録音の許可を求められます。次回の「開始」から反映されます。";
-"settings.sourceLanguage" = "言語1";
-"settings.targetLanguage" = "言語2";
-"settings.swapLanguages" = "⇄ 言語1と言語2を入れ替え";
-"settings.swapUnsupportedCaption" = "現在の言語2は音声認識が対応していない言語のため、入れ替えできません。";
-"settings.languageCaption" = "単方向のモードでは言語1を、双方向のモードでは両方を認識します。言語の変更は次回の「開始」から反映されます。";
+"settings.audioSourceCaption" = "システム音声を選ぶと、オンライン会議の相手の声など Mac が再生している音を文字起こしします（自分の声は入りません）。「両方」は2つを同時にキャプチャします（相手の声はシステム音声から、自分の声はマイクから。マイクがスピーカーの音を拾わないようイヤホンの利用を推奨）。初回はシステム音声の録音の許可を求められます。次に開始したときから反映されます。";
+"settings.language.source.translate" = "翻訳元";
+"settings.language.target.translate" = "翻訳先";
+"settings.language.source.transcribe" = "言語";
+"settings.language.source.pair" = "言語1";
+"settings.language.target.pair" = "言語2";
+"settings.swapLanguages" = "⇄ 言語を入れ替え";
+"settings.swapUnsupportedCaption" = "入れ替え先の言語に音声認識が対応していないため、入れ替えできません。";
+"settings.languageCaption.translate" = "翻訳元の言語を音声認識し、翻訳先の言語へ翻訳します。変更は次に開始したときから反映されます。";
+"settings.languageCaption.transcribe" = "選択した言語を音声認識します。変更は次に開始したときから反映されます。";
+"settings.languageCaption.pair" = "両方の言語を音声認識し、発話ごとにどちらが話されたかを判定します。変更は次に開始したときから反映されます。";
 "settings.mode" = "モード";
-"settings.mode.translate" = "単方向翻訳（言語1 → 言語2）";
-"settings.mode.bidirectional" = "双方向翻訳（言語1 ⇄ 言語2）";
-"settings.mode.transcribe" = "文字起こしのみ（言語1）";
-"settings.mode.bilingual" = "二言語文字起こし（言語1・言語2）";
-"settings.modeCaption" = "単方向翻訳: 言語1の発話を選択中のバックエンドが言語2へ翻訳します。双方向翻訳: 両言語を認識し、発話ごとに信頼度で言語を判定して相互に翻訳します（両言語が話される会議向け。仮訳は無効）。文字起こしのみ: 言語1を翻訳なしで文字起こしします（議事録用途や利用枠の節約に）。二言語文字起こし: 両言語を認識・判定し、翻訳なしで記録します。次回の「開始」から反映されます。";
+"settings.mode.translate" = "単方向翻訳";
+"settings.mode.bidirectional" = "双方向翻訳";
+"settings.mode.transcribe" = "文字起こしのみ";
+"settings.mode.bilingual" = "二言語文字起こし";
+"settings.modeCaption" = "単方向翻訳: 翻訳元の言語の発話を、選択中のバックエンドが翻訳先の言語へ翻訳します。双方向翻訳: 言語1・言語2の両方を認識し、発話ごとに信頼度で言語を判定して、それぞれもう一方の言語へ翻訳します（両言語が話される会議向け。仮訳は無効）。文字起こしのみ: 選択した言語を翻訳なしで文字起こしします（議事録用途や利用枠の節約に）。二言語文字起こし: 両言語を認識・判定し、翻訳なしで記録します。次に開始したときから反映されます。";
 "settings.backend" = "翻訳バックエンド";
 "settings.backend.claude" = "Claude（CLI）";
 "settings.backend.openai" = "OpenAI 互換（API / ローカル）";
@@ -89,9 +97,9 @@
 "settings.profiles.save" = "保存";
 "settings.cancel" = "キャンセル";
 "settings.profiles.keyCaption" = "キーはプロファイル内ではなく、この接続先用としてキーチェーンへ保存されます。";
-"settings.profilesCaption" = "バックエンド設定（バックエンド・接続先 URL・モデル）に名前を付けて保存し、「適用」で切り替えられます。「追加…」は現在の設定が初期値になります。API キーは接続先ごとにキーチェーンへ保存されているため、切り替えに自動で追従します。適用は次回の「開始」から反映されます。";
+"settings.profilesCaption" = "バックエンド設定（バックエンド・接続先 URL・モデル）に名前を付けて保存し、「適用」で切り替えられます。「追加…」は現在の設定が初期値になります。API キーは接続先ごとにキーチェーンへ保存されているため、切り替えに自動で追従します。適用は次に開始したときから反映されます。";
 "settings.provisional" = "区切りごとの仮訳";
-"settings.provisionalCaption" = "長い発話の途中でも、文の区切りを検出するたびに認識済みの部分を仮翻訳し、ライブ枠の下に薄色で表示します（発話の確定時に確定訳へ置き換わります）。OpenAI 互換バックエンドでのみ利用でき、双方向翻訳では無効です。次回の「開始」から反映されます。";
+"settings.provisionalCaption" = "長い発話の途中でも、文の区切りを検出するたびに認識済みの部分を仮翻訳し、ライブ枠の下に薄色で表示します（発話の確定時に確定訳へ置き換わります）。OpenAI 互換バックエンドでのみ利用でき、双方向翻訳では無効です。次に開始したときから反映されます。";
 "settings.openaiBaseURL" = "接続先 URL";
 "settings.openaiModel" = "モデル名";
 "settings.openaiKey" = "API キー";
@@ -99,21 +107,21 @@
 "settings.openaiModelsPick" = "選択";
 "settings.openaiModelsRefresh" = "再取得";
 "settings.openaiModelsError" = "モデル一覧の取得に失敗: %@";
-"settings.openaiCaption" = "クラウドの OpenAI（https://api.openai.com、キー必須）にも、LM Studio や llama.cpp などのローカルサーバー（例: http://localhost:1234、キー不要）にも接続できます。キーは接続先ごとにキーチェーンへ保存され、その接続先にだけ送信されます。ローカルの Qwen 系モデルはシステムプロンプトの先頭に /no_think を足すと高速になります。次回の「開始」から反映されます。";
+"settings.openaiCaption" = "クラウドの OpenAI（https://api.openai.com、キー必須）にも、LM Studio や llama.cpp などのローカルサーバー（例: http://localhost:1234、キー不要）にも接続できます。キーは接続先ごとにキーチェーンへ保存され、その接続先にだけ送信されます。ローカルの Qwen 系モデルはシステムプロンプトの先頭に /no_think を足すと高速になります。次に開始したときから反映されます。";
 "settings.claudePath" = "claude CLI のパス";
 "settings.claudePathPlaceholder" = "自動検出";
 "settings.claudePathDetect" = "自動検出";
 "settings.claudePathDetected" = "現在の解決先: %@";
 "settings.claudePathMissing" = "claude CLI が見つかりません（パスを確認するか「自動検出」を押してください）";
-"settings.claudePathCaption" = "検出されたパスが自動で入力されています。手動で変更するとそのパスが使われ、「自動検出」ボタンで検出結果に戻せます。次回の「開始」から反映されます。";
+"settings.claudePathCaption" = "検出されたパスが自動で入力されています。手動で変更するとそのパスが使われ、「自動検出」ボタンで検出結果に戻せます。次に開始したときから反映されます。";
 "settings.claudeModel" = "Claude モデル";
 "settings.model.sonnet" = "Sonnet 5（既定・バランス）";
 "settings.model.opus" = "Opus 5（最高品質）";
 "settings.model.haiku" = "Haiku 4.5（最小コスト）";
-"settings.modelCaption" = "レイテンシは3モデルともほぼ同等（約2〜3秒/発話）。Opus は誤認識の復元力が最も高く、Haiku は利用枠の消費が最小です。次回の「開始」から反映されます。";
+"settings.modelCaption" = "レイテンシは3モデルともほぼ同等（約2〜3秒/発話）。Opus は誤認識の復元力が最も高く、Haiku は利用枠の消費が最小です。次に開始したときから反映されます。";
 "settings.systemPrompt" = "システムプロンプト";
 "settings.resetDefault" = "デフォルトに戻す";
-"settings.promptCaption" = "発話は翻訳方向を示す source / target 属性（BCP-47 コード）付きの <u> タグで渡されます。カスタマイズする場合も「target 属性の言語へ訳す」という前提を保つと、1つのプロンプトが単方向・双方向の両方に対応します。発話が <u>...</u> タグで渡される前提は崩さないでください（崩すと翻訳ではなく会話として応答するようになります）。次回の「開始」から反映されます。";
+"settings.promptCaption" = "発話は翻訳方向を示す source / target 属性（BCP-47 コード）付きの <u> タグで渡されます。カスタマイズする場合も「target 属性の言語へ訳す」という前提を保つと、1つのプロンプトが単方向・双方向の両方に対応します。発話が <u>...</u> タグで渡される前提は崩さないでください（崩すと翻訳ではなく会話として応答するようになります）。次に開始したときから反映されます。";
 "settings.newestOnTop" = "新しい発話を上に表示";
 "settings.newestOnTopCaption" = "オン: 認識途中のテキストを最上部の固定枠に表示し、確定した発話が新しい順に並びます（視線の位置が固定される）。オフ: 従来どおり下に追記され、最下部に追従します。即時反映されるので、実行中に切り替えて比較できます。";
 "settings.liveLines" = "ライブ枠の行数";
@@ -128,7 +136,7 @@
 "settings.threshold" = "信頼度閾値";
 "settings.off" = "オフ";
 "settings.thresholdBidirectionalFloor" = "双方向のモードではこの値で発話の言語を判定するため、オフにはできません（代わりに %@ が適用されます）。";
-"settings.thresholdCaption" = "単方向では、認識の平均信頼度がこの値未満の発話を翻訳せず「翻訳スキップ」として表示します（言語1と別の言語の誤認識を弾くための設定です）。双方向・二言語文字起こしでは言語判定の採用基準になり、この値未満の確定結果は誤言語側の認識とみなして破棄します（表示も保存もされません）。即時反映されます。信頼度は保存される JSONL にも記録されるので、実データを見て調整できます。";
+"settings.thresholdCaption" = "単方向では、認識の平均信頼度がこの値未満の発話を翻訳せず「翻訳スキップ」として表示します（翻訳元と別の言語の誤認識を弾くための設定です）。双方向・二言語文字起こしでは言語判定の採用基準になり、この値未満の確定結果は誤言語側の認識とみなして破棄します（表示も保存もされません）。即時反映されます。信頼度は保存される JSONL にも記録されるので、実データを見て調整できます。";
 "settings.autoStop" = "自動停止";
 "settings.autoStopValue" = "無音 %d 分で停止";
 "settings.autoStopCaption" = "音声認識の結果がこの時間まったく出なかったら、自動的に停止して保存します（止め忘れ防止）。0 でオフ。即時反映されます。";
