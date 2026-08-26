@@ -40,7 +40,6 @@ Anything spoken that your Mac can play, or that a microphone can hear.
 ## Requirements
 
 - macOS 26.0 or later, Apple Silicon
-- Swift 6 toolchain (Xcode or Command Line Tools) to build
 - For translation, one of:
   - An OpenAI-compatible endpoint (the default backend) — a local server such as [LM Studio](https://lmstudio.ai/), which needs no key, or OpenAI's cloud with an API key
   - [Claude Code CLI](https://code.claude.com/) (`claude`) with an active subscription or API login
@@ -55,27 +54,9 @@ Download `Kikiyaku_v*_macos_arm64.zip` from the [releases page](https://github.c
 xattr -dr com.apple.quarantine /Applications/Kikiyaku.app
 ```
 
-Kikiyaku is not notarized by Apple, so macOS quarantines the download and refuses to open it — usually with a message claiming the app is damaged. Nothing is damaged; macOS simply cannot check a signature Apple never issued, and since macOS 15 there is no longer a right-click-to-open way around it. The command above is you saying you trust this app anyway, so run it only for a copy you got from the releases page above. Building from source instead avoids the question entirely.
+Kikiyaku is not notarized by Apple, so macOS quarantines the download and refuses to open it — usually with a message claiming the app is damaged. Nothing is damaged; macOS simply cannot check a signature Apple never issued, and since macOS 15 there is no longer a right-click-to-open way around it. The command above is you saying you trust this app anyway, so run it only for a copy you got from the releases page above. [Building it yourself](#building-from-source) avoids the question entirely.
 
 The app is signed ad hoc, which means its signature changes with every release. macOS ties permissions to that signature, so the microphone and speech recognition prompts come back after each update.
-
-## Build
-
-```sh
-./scripts/build.sh
-open build/Kikiyaku.app
-```
-
-The script builds with SwiftPM, assembles `build/Kikiyaku.app`, signs it, and stamps the version from the `VERSION` file into the bundle. With Xcode installed it also compiles the app icon into an `Assets.car`, without which macOS 26 draws the icon on a plate in the Dock.
-
-### Signing (recommended)
-
-By default the app is signed ad hoc, which means macOS resets the microphone and speech recognition permissions on **every rebuild**. To keep permissions across rebuilds, create a self-signed code signing certificate named `kikiyaku-dev` — the build script picks it up automatically:
-
-1. Open **Keychain Access** → menu **Keychain Access > Certificate Assistant > Create a Certificate…**
-2. Name: `kikiyaku-dev`, Identity Type: *Self-Signed Root*, Certificate Type: *Code Signing* → Create.
-
-Alternatively, set `KIKIYAKU_CODESIGN_IDENTITY` to any identity you prefer.
 
 ## Setup
 
@@ -169,6 +150,26 @@ Speech recognition always runs on-device; audio is never sent anywhere. (Downloa
 - Capturing system audio sends nothing anywhere by itself, but it does mean everyone else on a call — and anything else your Mac plays — is transcribed, and if translation is on, their words go to the backend you configured, the same as your own.
 - Transcripts are only written to the local save directory you configure.
 - API keys are stored in the macOS Keychain, per endpoint, and are only ever sent to that endpoint.
+
+## Building from source
+
+Building needs a Swift 6 toolchain — Xcode, or the Command Line Tools.
+
+```sh
+./scripts/build.sh
+open build/Kikiyaku.app
+```
+
+The script builds with SwiftPM, assembles `build/Kikiyaku.app`, signs it, and stamps the version from the `VERSION` file into the bundle. With Xcode installed it also compiles the app icon into an `Assets.car`, without which macOS 26 draws the icon on a plate in the Dock.
+
+### Signing (recommended)
+
+By default the app is signed ad hoc, which means macOS resets the microphone and speech recognition permissions on **every rebuild**. To keep permissions across rebuilds, create a self-signed code signing certificate named `kikiyaku-dev` — the build script picks it up automatically:
+
+1. Open **Keychain Access** → menu **Keychain Access > Certificate Assistant > Create a Certificate…**
+2. Name: `kikiyaku-dev`, Identity Type: *Self-Signed Root*, Certificate Type: *Code Signing* → Create.
+
+Alternatively, set `KIKIYAKU_CODESIGN_IDENTITY` to any identity you prefer.
 
 ## License
 
