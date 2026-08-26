@@ -19,6 +19,7 @@
 "panel.stop" = "停止";
 "panel.skippedConfidence" = "翻訳スキップ（信頼度 %@）";
 "panel.translating" = "翻訳中";
+"panel.recognizing" = "認識中";
 "panel.provisionalKept" = "暫定訳（確定訳の取得に失敗）";
 
 /* Status */
@@ -129,9 +130,11 @@
 "settings.liveLinesValue" = "%d 行";
 "settings.fontSize" = "文字サイズ";
 "settings.fontSizeCaption" = "訳文の文字サイズです。即時反映されます。";
-"settings.sourceText" = "原文（音声認識テキスト）を表示";
+"settings.liveSourceText" = "認識中の原文を表示";
+"settings.liveSourceTextCaption" = "話している途中の発話を認識できたそばから表示します。訳文は1秒ほど遅れて出るため、正しく聞き取れているかはここで分かります。確定した発話も次の発話が始まるまではライブ枠に残り、履歴に移ると訳文だけになります。即時反映されます。";
+"settings.sourceText" = "履歴の原文を表示";
 "settings.sourceFontSize" = "原文の文字サイズ";
-"settings.sourceTextCaption" = "オフにすると訳文だけのパネルになります（認識中はスピナーの回転で分かります）。即時反映されます。";
+"settings.sourceTextCaption" = "オフにすると履歴は訳文だけになります（行をクリックすればその発話の原文が開きます）。即時反映されます。";
 "settings.opacity" = "パネルの不透明度";
 "settings.opacityCaption" = "背景の透け具合です。文字（認識・訳文）は常に不透明のまま表示されます。即時反映されます。";
 "settings.threshold" = "信頼度閾値";

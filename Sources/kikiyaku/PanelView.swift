@@ -329,6 +329,11 @@ private struct LiveRail: View {
 /// below it down the panel.
 private struct SkeletonLine: View {
     let fontSize: Double
+    /// What the placeholder is standing in for, spoken by VoiceOver. Almost
+    /// always a translation on its way — but a bilingual panel that is hiding
+    /// its live source line is waiting on the recognition of its own language,
+    /// where nothing is being translated at all.
+    var waitingFor: String = L("panel.translating")
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Three keeps the mark about as compact as the spinner it replaced. The
@@ -365,7 +370,7 @@ private struct SkeletonLine: View {
                 }
             }
         }
-        .accessibilityLabel(L("panel.translating"))
+        .accessibilityLabel(waitingFor)
     }
 
     private func track(height: Double, opacity: @escaping (Int) -> Double) -> some View {
@@ -479,7 +484,7 @@ private struct HistoryContent: View {
     private var translationSlot: some View {
         if let lingering {
             if lingering.translation != nil {
-                TranslationText(utterance: lingering, fontSize: state.fontSize, selectable: state.sourceTextVisible)
+                TranslationText(utterance: lingering, fontSize: state.fontSize, selectable: liveSourceSettled)
             } else if lingering.translationSkipped {
                 Text(LF("panel.skippedConfidence", lingering.confidence.map { String(format: "%.2f", $0) } ?? "-"))
                     .font(.system(size: max(8, state.fontSize * 0.72)))
@@ -499,7 +504,7 @@ private struct HistoryContent: View {
                         // spinner gone, the colour is what separates a
                         // provisional from a settled translation.
                         .foregroundStyle(.secondary)
-                        .selectable(state.sourceTextVisible)
+                        .selectable(liveSourceSettled)
                 } else if lingering.finalTranslationFailed {
                     Text(L("translation.failed"))
                         .font(.system(size: max(8, state.fontSize * 0.72)))
@@ -521,7 +526,7 @@ private struct HistoryContent: View {
                     .font(.system(size: state.fontSize))
                     .multilineTextAlignment(.leading)
                     .foregroundStyle(.secondary)
-                    .selectable(state.sourceTextVisible)
+                    .selectable(liveSourceSettled)
             }
         }
     }
@@ -533,13 +538,23 @@ private struct HistoryContent: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .simultaneousGesture(TapGesture().onEnded {
-                guard !state.sourceTextVisible else { return }
+                guard !liveSourceSettled else { return }
                 liveSourceRevealed.toggle()
             })
     }
 
+    /// The live region answers to its own setting only. The history's setting
+    /// governs the rows below and nothing here: someone who wants the source in
+    /// the scrollback but not in the live line must be able to have that.
     private var sourceLineVisible: Bool {
-        state.sourceTextVisible || liveSourceRevealed || sourceForced
+        state.liveSourceTextVisible || liveSourceRevealed || sourceForced
+    }
+
+    /// With the live source line already on screen, the click-to-reveal gesture
+    /// has nothing to reveal, so the slot's text becomes selectable instead
+    /// (the same trade the history rows make).
+    private var liveSourceSettled: Bool {
+        state.liveSourceTextVisible || sourceForced
     }
 
     /// The live region, in the same [time | content] shape as a history row:
@@ -768,9 +783,17 @@ private struct BilingualContent: View {
     @ViewBuilder
     private var liveSlots: some View {
         ForEach(liveEntries, id: \.channel) { entry in
-            if entry.text != nil || state.translationReady {
+            // With the live source line switched off, the skeleton takes its
+            // place — but only where a translation is actually coming. Without
+            // one this line is all the slot will ever hold, so it stays on
+            // regardless of the setting (what sourceForced does for the
+            // classic panel).
+            let hidingSource =
+                entry.text != nil && !state.liveSourceTextVisible && state.translationReady
+            let text = hidingSource ? nil : entry.text
+            if text != nil || state.translationReady {
                 Group {
-                    if let text = entry.text {
+                    if let text {
                         Text(text)
                             .font(.system(size: state.fontSize))
                             .foregroundStyle(.secondary)
@@ -778,7 +801,10 @@ private struct BilingualContent: View {
                             .truncationMode(.head)
                             .multilineTextAlignment(.leading)
                     } else {
-                        SkeletonLine(fontSize: state.fontSize)
+                        SkeletonLine(
+                            fontSize: state.fontSize,
+                            waitingFor: hidingSource
+                                ? L("panel.recognizing") : L("panel.translating"))
                     }
                 }
                 .liveRail()

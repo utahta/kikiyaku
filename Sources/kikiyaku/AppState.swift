@@ -154,8 +154,10 @@ final class AppState {
     var fontSize = Preferences.fontSize
     /// Font size of the recognized source text. Mirrors Preferences; immediate.
     var sourceFontSize = Preferences.sourceFontSize
-    /// Whether the recognized source text is shown. Mirrors Preferences; immediate.
+    /// Whether the history rows show their source text. Mirrors Preferences; immediate.
     var sourceTextVisible = Preferences.sourceTextVisible
+    /// Whether the live region shows the in-progress recognition text. Mirrors Preferences; immediate.
+    var liveSourceTextVisible = Preferences.liveSourceTextVisible
     /// Whether new utterances appear on top. Mirrors Preferences; applies to the panel immediately.
     var newestOnTop = Preferences.newestOnTop
     /// Number of lines in the live region. Mirrors Preferences; applies to the panel immediately.

@@ -19,6 +19,7 @@
 "panel.stop" = "Stop";
 "panel.skippedConfidence" = "Translation skipped (confidence %@)";
 "panel.translating" = "Translating";
+"panel.recognizing" = "Recognizing";
 "panel.provisionalKept" = "Provisional (final translation failed)";
 
 /* Status */
@@ -129,9 +130,11 @@
 "settings.liveLinesValue" = "%d lines";
 "settings.fontSize" = "Font size";
 "settings.fontSizeCaption" = "Font size of translations. Takes effect immediately.";
-"settings.sourceText" = "Show source text (recognition)";
+"settings.liveSourceText" = "Show live recognition text";
+"settings.liveSourceTextCaption" = "Shows an utterance as it is being recognized. The translation follows about a second later, so this line is what tells you the words were heard correctly. A finalized utterance stays here until the next one begins, and leaves only its translation behind when it moves into the history. Takes effect immediately.";
+"settings.sourceText" = "Show source text in the history";
 "settings.sourceFontSize" = "Source text size";
-"settings.sourceTextCaption" = "Turning this off gives a translations-only panel (the spinner still shows while recognition is running). Takes effect immediately.";
+"settings.sourceTextCaption" = "Turning this off leaves translations alone in the history (click a row to open that utterance's source). Takes effect immediately.";
 "settings.opacity" = "Panel opacity";
 "settings.opacityCaption" = "Controls how translucent the panel background is. Text (transcripts and translations) always stays fully opaque. Takes effect immediately.";
 "settings.threshold" = "Confidence threshold";

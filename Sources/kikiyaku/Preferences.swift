@@ -326,6 +326,7 @@ enum Preferences {
 
     private static let sourceFontSizeKey = "sourceFontSize"
     private static let sourceTextVisibleKey = "sourceTextVisible"
+    private static let liveSourceTextVisibleKey = "liveSourceTextVisible"
 
     /// Font size (pt) of the recognized source text (live text and the history
     /// rows' source lines).
@@ -337,15 +338,29 @@ enum Preferences {
         set { UserDefaults.standard.set(newValue, forKey: sourceFontSizeKey) }
     }
 
-    /// Whether the recognized source text is shown at all. Defaults to off —
-    /// the panel is translation-first, with the source one click away
-    /// (per-row and live-slot reveal toggles).
+    /// Whether the history rows carry their source text. Defaults to off — the
+    /// panel is translation-first, and a row's source is one click away. Every
+    /// row keeping both lines would double the height of the scrollback.
     static var sourceTextVisible: Bool {
         get {
             guard UserDefaults.standard.object(forKey: sourceTextVisibleKey) != nil else { return false }
             return UserDefaults.standard.bool(forKey: sourceTextVisibleKey)
         }
         set { UserDefaults.standard.set(newValue, forKey: sourceTextVisibleKey) }
+    }
+
+    /// Whether the live region shows the recognition text of the utterance
+    /// being spoken. Defaults to on, unlike the history: the translation
+    /// arrives about a second late, and the spinner alone says only that
+    /// something is happening, not that the words were heard correctly. It
+    /// costs nothing in height either — the line is transient, and what stays
+    /// behind in the history is the translation alone.
+    static var liveSourceTextVisible: Bool {
+        get {
+            guard UserDefaults.standard.object(forKey: liveSourceTextVisibleKey) != nil else { return true }
+            return UserDefaults.standard.bool(forKey: liveSourceTextVisibleKey)
+        }
+        set { UserDefaults.standard.set(newValue, forKey: liveSourceTextVisibleKey) }
     }
 
     /// Default confidence floor, and the value the bidirectional modes fall
