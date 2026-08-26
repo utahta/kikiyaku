@@ -1,5 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- macOS app icons draw their own rounded shape and margin: the artwork is
+       824x824 within a 1024 canvas, corner radius 185. Filling the whole canvas
+       instead leaves square corners that stand out in the Dock. -->
+  <defs>
+    <clipPath id="squircle">
+      <rect x="100" y="100" width="824" height="824" rx="185"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#squircle)">
+  <g transform="translate(100,100) scale(0.8046875)">
   <rect x="0" y="0" width="100%" height="100%" fill="#0C1657"/>
+  <!-- The artwork was drawn full-bleed, so its own margins are wide for a
+       rounded frame. Scale it up about the bottom centre (the cat is meant to
+       sit on the lower edge) to close the gap between the content and the rim. -->
+  <g transform="translate(512,1024) scale(1.12) translate(-512,-1024)">
   <rect x="179.5" y="315" width="57" height="122" rx="28.5" fill="#E0A723"/>
   <rect x="281.5" y="250" width="57" height="249" rx="28.5" fill="#E0A723"/>
   <rect x="380.5" y="185.5" width="58" height="376" rx="29" fill="#E0A723"/>
@@ -20,4 +34,7 @@
  C 758 860, 758 866, 768 886
  C 783 914, 790 966, 790 1024
  Z" fill="#FBF8F1"/>
+  </g>
+  </g>
+  </g>
 </svg>

@@ -41,7 +41,10 @@ if [ -f "$ICON_SVG" ] && command -v magick >/dev/null 2>&1; then
         # numbers, and rewriting those too would shrink it out of the frame.
         sed "1s|width=\"1024\" height=\"1024\"|width=\"$1\" height=\"$1\"|" \
             "$ICON_SVG" > "$ICONSET/../render.svg"
-        magick "$ICONSET/../render.svg" "$ICONSET/$2.png"
+        # -background none is required: without it magick fills the area
+        # outside the icon's rounded shape with white, which shows up in the
+        # Dock as a white square around the icon.
+        magick -background none "$ICONSET/../render.svg" "$ICONSET/$2.png"
     }
     render_icon 16 icon_16x16;      render_icon 32 icon_16x16@2x
     render_icon 32 icon_32x32;      render_icon 64 icon_32x32@2x
@@ -54,6 +57,40 @@ fi
 if [ -f "$ICON_ICNS" ]; then
     mkdir -p "$APP/Contents/Resources"
     cp "$ICON_ICNS" "$APP/Contents/Resources/AppIcon.icns"
+fi
+
+# macOS 26 puts apps whose icon is only a legacy .icns onto a white plate in
+# the Dock, drawn a size smaller than everyone else's. Compiling the same
+# images into an Assets.car — which is what CFBundleIconName in Info.plist
+# points at — makes the icon native again. Needs Xcode (not just the command
+# line tools); without it the .icns above still works, plate and all.
+if [ -f "$ICON_ICNS" ] && xcrun --find actool >/dev/null 2>&1; then
+    WORK="$(mktemp -d)"
+    if iconutil -c iconset "$ICON_ICNS" -o "$WORK/AppIcon.iconset" 2>/dev/null; then
+        SET="$WORK/AppIcon.xcassets/AppIcon.appiconset"
+        mkdir -p "$SET"
+        cp "$WORK/AppIcon.iconset/"*.png "$SET/"
+        printf '{"info":{"author":"kikiyaku","version":1}}' > "$WORK/AppIcon.xcassets/Contents.json"
+        {
+            printf '{\n  "images": ['
+            sep=""
+            for size in 16 32 128 256 512; do
+                printf '%s\n    {"filename":"icon_%sx%s.png","idiom":"mac","scale":"1x","size":"%sx%s"},' \
+                    "$sep" "$size" "$size" "$size" "$size"
+                printf '\n    {"filename":"icon_%sx%s@2x.png","idiom":"mac","scale":"2x","size":"%sx%s"}' \
+                    "$size" "$size" "$size" "$size"
+                sep=","
+            done
+            printf '\n  ],\n  "info": {"author":"kikiyaku","version":1}\n}\n'
+        } > "$SET/Contents.json"
+        xcrun actool --compile "$APP/Contents/Resources" --platform macosx \
+            --minimum-deployment-target 26.0 --app-icon AppIcon \
+            --output-partial-info-plist "$WORK/partial.plist" \
+            "$WORK/AppIcon.xcassets" >/dev/null 2>&1 \
+            && echo ">> icon: compiled Assets.car (native Dock icon)" \
+            || echo ">> NOTE: actool failed; the Dock will fall back to the plated .icns icon."
+    fi
+    rm -rf "$WORK"
 fi
 
 # Localizations for the permission dialog texts. InfoPlist.strings must live in
