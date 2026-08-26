@@ -77,13 +77,13 @@ For the bidirectional modes, earphones are recommended when capturing both the m
 
 ### Backend: OpenAI API
 
-Select **OpenAI-compatible (API / local)**, keep the URL `https://api.openai.com`, set a model (`gpt-5.6-terra` is the one to reach for — see [Performance](#performance)), and paste your API key. Keys are stored in the macOS Keychain, **per endpoint** (scheme, host, and port), and are only ever sent to that endpoint.
+Select **OpenAI-compatible (API / local)**, keep the URL `https://api.openai.com` and the model `gpt-5.6-terra` (the default — see [Choosing a model](#choosing-a-model)), and paste your API key. Keys are stored in the macOS Keychain, **per endpoint** (scheme, host, and port), and are only ever sent to that endpoint.
 
 ### Backend: local server (LM Studio etc.)
 
 Select **OpenAI-compatible (API / local)** and point the URL at your server, e.g. `http://localhost:1234` (a trailing `/v1` also works). No key needed.
 
-See [Performance](#performance) for which model to run.
+See [Choosing a model](#choosing-a-model) for which model to run.
 
 ### Backend: Claude CLI
 
@@ -93,9 +93,9 @@ The CLI session is strictly serial, at roughly two to three seconds per utteranc
 
 Privacy notes: recognized text (not audio) is sent to Anthropic for translation. The CLI is launched with `--setting-sources ""`, `--strict-mcp-config`, `--disallowedTools "*"` and `--no-session-persistence`, so your local Claude configuration (hooks, plugins, MCP servers) is not applied and nothing you transcribe is written to Claude's session history.
 
-## Performance
+## Choosing a model
 
-Latency is what decides whether captions are usable, so the backends were measured against each other: 33 utterances from a recorded interview, sent with the conversation history, thinking disabled, non-streaming. Local models ran in LM Studio on Apple Silicon with 64 GB. Figures are the mean per utterance, measured in August 2026.
+Latency is what decides whether captions are usable, so the models behind each backend were measured against each other: 33 utterances from a recorded interview, sent with the conversation history, thinking disabled, non-streaming. Local models ran in LM Studio on Apple Silicon with 64 GB. Figures are the mean per utterance, measured in August 2026.
 
 **Local models (OpenAI-compatible API)** — what to run on which machine
 
