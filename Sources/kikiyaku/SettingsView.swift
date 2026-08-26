@@ -8,14 +8,27 @@ import SwiftUI
 /// again, which is exactly what a hover reveal is for.
 private struct HelpTip: View {
     let text: String
+    /// The same reveal serves warnings, which differ only in how they look and
+    /// in what a screen reader calls them.
+    var systemImage = "questionmark.circle"
+    var style = AnyShapeStyle(.secondary)
+    var accessibilityName = L("settings.help")
     /// Shown while the pointer rests on the icon.
     @State private var hovering = false
     /// Held open by activating the icon — the route for anyone driving the
     /// settings from the keyboard, who has no pointer to rest anywhere.
     @State private var pinned = false
 
-    init(_ text: String) {
+    init(
+        _ text: String,
+        systemImage: String = "questionmark.circle",
+        style: AnyShapeStyle = AnyShapeStyle(.secondary),
+        accessibilityName: String = L("settings.help")
+    ) {
         self.text = text
+        self.systemImage = systemImage
+        self.style = style
+        self.accessibilityName = accessibilityName
     }
 
     private var presented: Binding<Bool> {
@@ -39,8 +52,8 @@ private struct HelpTip: View {
         Button {
             pinned.toggle()
         } label: {
-            Image(systemName: "questionmark.circle")
-                .foregroundStyle(.secondary)
+            Image(systemName: systemImage)
+                .foregroundStyle(style)
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
@@ -53,7 +66,7 @@ private struct HelpTip: View {
                 .frame(width: 340, alignment: .leading)
                 .padding(12)
         }
-        .accessibilityLabel(L("settings.help"))
+        .accessibilityLabel(accessibilityName)
         .accessibilityHint(text)
     }
 }
@@ -88,6 +101,7 @@ struct SettingsView: View {
     @State private var fontSize = Preferences.fontSize
     @State private var sourceFontSize = Preferences.sourceFontSize
     @State private var sourceTextVisible = Preferences.sourceTextVisible
+    @State private var liveSourceTextVisible = Preferences.liveSourceTextVisible
     @State private var newestOnTop = Preferences.newestOnTop
     @State private var liveLines = Preferences.liveLines
     /// Whether the selected mode translates at all — the modes with translation
@@ -122,8 +136,11 @@ struct SettingsView: View {
 
     private var targetLanguageLabel: String {
         switch sessionMode {
-        case .translate: L("settings.language.target.translate")
-        case .transcribe, .bidirectional, .bilingual: L("settings.language.target.pair")
+        // Transcription-only shows this slot only when the value stored in it
+        // is blocking the other modes — and that value is a translation
+        // target, whatever the current mode does with it.
+        case .translate, .transcribe: L("settings.language.target.translate")
+        case .bidirectional, .bilingual: L("settings.language.target.pair")
         }
     }
 
@@ -131,6 +148,19 @@ struct SettingsView: View {
         switch sessionMode {
         case .translate: L("settings.languageCaption.translate")
         case .transcribe: L("settings.languageCaption.transcribe")
+        case .bidirectional, .bilingual: L("settings.languageCaption.pair")
+        }
+    }
+
+    /// Language 2 answers to a different rule in each mode — an LLM's output
+    /// in one, a second recognition language in two others, and in
+    /// transcription-only a stored value this mode does not read at all. The
+    /// one-direction text talks about translation quality, which would be
+    /// nonsense above a bilingual transcript that translates nothing.
+    private var targetLanguageCaption: String {
+        switch sessionMode {
+        case .translate: L("settings.languageCaption.target")
+        case .transcribe: L("settings.languageCaption.targetUnused")
         case .bidirectional, .bilingual: L("settings.languageCaption.pair")
         }
     }
@@ -163,12 +193,22 @@ struct SettingsView: View {
     @State private var uiLanguage = Preferences.uiLanguage
     @State private var panelOpacity = Preferences.panelOpacity
     @State private var sourceOptions: [LanguageOption] = []
-    @State private var targetOptions: [LanguageOption] = []
+    /// Language-2 candidates for the modes that recognize it.
+    @State private var recognizedTargetOptions: [LanguageOption] = []
+    /// Language-2 candidates for one-direction translation, where the language
+    /// is only translated into and can be anything the LLM knows.
+    @State private var broadTargetOptions: [LanguageOption] = []
     /// The genuine SpeechTranscriber capability list, captured BEFORE the
     /// display-only rescue entries are appended to sourceOptions (a stored but
     /// unsupported locale gets appended there purely so the Picker can show
     /// it — that is not proof the recognizer supports it).
     @State private var supportedSourceIDs: Set<String> = []
+    /// Whether supportedSourceIDs has been filled in yet. Reading the empty
+    /// set as "the recognizer supports nothing" would greet every launch with
+    /// an orange warning and two greyed-out modes for as long as the async
+    /// lookup takes — a claim about the configuration made before anything is
+    /// known about it.
+    @State private var capabilitiesLoaded = false
 
     /// Swapping puts the current target into the recognition slot, so it is
     /// only allowed when that language is a SpeechTranscriber-supported locale
@@ -177,8 +217,74 @@ struct SettingsView: View {
     /// contains display-only rescue entries for unsupported stored values.
     /// Matching is by option ID; a false negative merely disables the button,
     /// which is the safe direction.
+    /// The capability set is keyed by BCP-47, but a stored ID need not be:
+    /// `defaults write` and older settings leave underscored forms like en_US
+    /// behind. Engine.start canonicalizes before it checks, so comparing the
+    /// raw string here would have the settings screen refuse a language the
+    /// session would have run. Canonicalizing the stored value instead of
+    /// rewriting it: writing to targetID fires applySettingsChange, which
+    /// clears the panel's history — not something opening the settings should
+    /// do.
+    private var canonicalTargetID: String {
+        Locale(identifier: targetID).identifier(.bcp47)
+    }
+
+    private func recognizable(_ option: LanguageOption) -> Bool {
+        supportedSourceIDs.contains(Locale(identifier: option.id).identifier(.bcp47))
+    }
+
     private var swapPossible: Bool {
-        supportedSourceIDs.contains(targetID)
+        capabilitiesLoaded && supportedSourceIDs.contains(canonicalTargetID)
+    }
+
+    /// The modes that recognize language 2 offer the recognizer's locales and
+    /// nothing else; the modes that only translate into it (or, for
+    /// transcription-only, merely hold the value) offer the broad list.
+    ///
+    /// A stored value outside the chosen list is appended here rather than
+    /// kept in the lists themselves — which is the difference between showing
+    /// the current selection and offering it. A translation-only language left
+    /// sitting in the recognized list would still be there after the reader
+    /// moved off it, ready to be picked again in a mode that cannot start with
+    /// it.
+    private var targetOptions: [LanguageOption] {
+        let base = sessionMode.isBidirectional ? recognizedTargetOptions : broadTargetOptions
+        guard !base.contains(where: { $0.id == targetID }) else { return base }
+        return base + [Preferences.option(id: targetID)]
+    }
+
+    /// The modes that recognize language 2 cannot run with a target the
+    /// recognizer does not support, so they are not offered while one is
+    /// selected — the same test the swap button makes, for the same reason.
+    /// Before the capability list arrives nothing is blocked: withholding a
+    /// mode has to be a statement about the configuration, not about the
+    /// lookup not having finished.
+    private var pairModesAvailable: Bool {
+        !capabilitiesLoaded || supportedSourceIDs.contains(canonicalTargetID)
+    }
+
+    private var targetLabel: String {
+        targetOptions.first { $0.id == targetID }?.label ?? targetID
+    }
+
+    private func modeLabel(_ mode: SessionMode) -> String {
+        switch mode {
+        case .translate: return L("settings.mode.translate")
+        case .bidirectional: return L("settings.mode.bidirectional")
+        case .transcribe: return L("settings.mode.transcribe")
+        case .bilingual: return L("settings.mode.bilingual")
+        }
+    }
+
+    private func modeAvailable(_ mode: SessionMode) -> Bool {
+        pairModesAvailable || !mode.isBidirectional
+    }
+
+    private func select(_ mode: SessionMode) {
+        guard mode != sessionMode, modeAvailable(mode) else { return }
+        sessionMode = mode
+        Preferences.sessionMode = mode
+        AppDelegate.applySettingsChange()
     }
 
     private var claudeModelOptions: [String] {
@@ -230,17 +336,43 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                Picker(selection: $sessionMode) {
-                    Text(L("settings.mode.translate")).tag(SessionMode.translate)
-                    Text(L("settings.mode.bidirectional")).tag(SessionMode.bidirectional)
-                    Text(L("settings.mode.transcribe")).tag(SessionMode.transcribe)
-                    Text(L("settings.mode.bilingual")).tag(SessionMode.bilingual)
+                // A Menu of Buttons rather than a Picker: a Picker's items
+                // ignore .disabled on macOS, and a mode that cannot run has to
+                // read as unavailable at the moment it is looked at — inside
+                // the open menu — not as an entry that quietly does nothing.
+                LabeledContent {
+                    HStack(spacing: 6) {
+                        Menu {
+                            ForEach(SessionMode.allCases) { mode in
+                                Button {
+                                    select(mode)
+                                } label: {
+                                    if mode == sessionMode {
+                                        Label(modeLabel(mode), systemImage: "checkmark")
+                                    } else {
+                                        Text(modeLabel(mode))
+                                    }
+                                }
+                                .disabled(!modeAvailable(mode))
+                            }
+                        } label: {
+                            Text(modeLabel(sessionMode))
+                        }
+                        .fixedSize()
+                        .disabled(sessionLocked)
+                        // Why two of the entries are greyed out, next to the
+                        // control they are greyed out in. A caption below would
+                        // be hidden by the open menu at the very moment the
+                        // reader is looking for the answer.
+                        if !pairModesAvailable, !targetOptions.isEmpty {
+                            HelpTip(
+                                LF("settings.modePairUnavailableCaption", targetLabel),
+                                systemImage: "exclamationmark.triangle.fill",
+                                style: AnyShapeStyle(.orange),
+                                accessibilityName: L("settings.warning"))
+                        }
+                    }
                 } label: { HelpLabel(L("settings.mode"), help: L("settings.modeCaption")) }
-                .onChange(of: sessionMode) {
-                    Preferences.sessionMode = sessionMode
-                    AppDelegate.applySettingsChange()
-                }
-                .disabled(sessionLocked)
 
                 Picker(selection: $audioSource) {
                     Text(L("settings.audioSource.mic")).tag("mic")
@@ -267,17 +399,53 @@ struct SettingsView: View {
                 // it) would invite the reader to set something this mode
                 // never reads. The stored value is untouched and comes back
                 // with the mode that uses it.
-                if sessionMode != .transcribe {
-                    Picker(targetLanguageLabel, selection: $targetID) {
-                        ForEach(targetOptions) { option in
-                            Text(option.label).tag(option.id)
+                //
+                // Unless the stored value is the reason two other modes are
+                // greyed out. Hiding the one control that could release them
+                // would leave the warning asking for a change the reader has
+                // no way to make without first going back to a mode they may
+                // not want.
+                if sessionMode != .transcribe || !pairModesAvailable {
+                    // Written through the binding rather than from .onChange:
+                    // where this Picker appears conditionally, picking a
+                    // supported language is exactly what takes it off screen
+                    // again, and a modifier on a view being removed in the same
+                    // update is not guaranteed to run. That failure is silent
+                    // and expensive — the screen would show the new language
+                    // while the session started with the old one.
+                    Picker(selection: Binding(
+                        get: { targetID },
+                        set: { chosen in
+                            targetID = chosen
+                            Preferences.targetLocaleID = chosen
+                            AppDelegate.applySettingsChange()
                         }
+                    )) {
+                        // Split so that "the recognizer knows this one too"
+                        // and "the model is on its own here" are visible in
+                        // the list rather than only in the help text. The
+                        // other modes recognize language 2, so every entry
+                        // they offer is already in the first group.
+                        if sessionMode == .translate {
+                            Section(L("settings.language.target.recognizedSection")) {
+                                ForEach(targetOptions.filter { recognizable($0) }) {
+                                    Text($0.label).tag($0.id)
+                                }
+                            }
+                            Section(L("settings.language.target.translationOnlySection")) {
+                                ForEach(targetOptions.filter { !recognizable($0) }) {
+                                    Text($0.label).tag($0.id)
+                                }
+                            }
+                        } else {
+                            ForEach(targetOptions) { option in
+                                Text(option.label).tag(option.id)
+                            }
+                        }
+                    } label: {
+                        HelpLabel(targetLanguageLabel, help: targetLanguageCaption)
                     }
                     .disabled(targetOptions.isEmpty || sessionLocked)
-                    .onChange(of: targetID) {
-                        Preferences.targetLocaleID = targetID
-                        AppDelegate.applySettingsChange()
-                    }
                     // Bilingual transcription treats the two languages
                     // identically — both recognized, neither translated — so
                     // an exchange between them answers no question the reader
@@ -285,28 +453,28 @@ struct SettingsView: View {
                     if sessionMode != .bilingual {
                         Button(L("settings.swapLanguages")) {
                             guard swapPossible else { return }
-                            let source = sourceID
+                            // The canonical form, not the stored string: the
+                            // swap is allowed on the strength of the canonical
+                            // ID matching a recognizer locale, so that is the
+                            // value the recognition slot has to receive. Moving
+                            // en_US across as it stands would match nothing in
+                            // the source list and leave the Picker blank.
+                            let promoted = canonicalTargetID
+                            let demoted = sourceID
                             // Store both halves before touching the fields.
-                            // The two change handlers below fire one at a
-                            // time, and the first of them would otherwise read
-                            // a pair that is briefly the same language twice —
-                            // a configuration the layout sync would act on,
+                            // The change handler below fires after the first
+                            // field is written and would otherwise read a pair
+                            // that is briefly the same language twice — a
+                            // configuration the layout sync would act on,
                             // collapsing the panels mid-swap.
-                            Preferences.sourceLocaleID = targetID
-                            Preferences.targetLocaleID = source
-                            sourceID = targetID
-                            targetID = source
-                            // The lists are unified now, but a rescue entry (a
-                            // language the recognizer does not support) can
-                            // still land in the second slot; keep the picker
-                            // from breaking.
-                            if !targetOptions.contains(where: { $0.id == targetID }) {
-                                targetOptions.append(Preferences.option(id: targetID))
-                            }
+                            Preferences.sourceLocaleID = promoted
+                            Preferences.targetLocaleID = demoted
+                            sourceID = promoted
+                            targetID = demoted
                         }
                         .controlSize(.small)
                         .disabled(!swapPossible || sessionLocked)
-                        if !swapPossible, !targetOptions.isEmpty {
+                        if capabilitiesLoaded, !swapPossible, !targetOptions.isEmpty {
                             Text(L("settings.swapUnsupportedCaption"))
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
@@ -535,6 +703,11 @@ struct SettingsView: View {
                     AppState.shared.fontSize = fontSize
                 }
 
+                Toggle(isOn: $liveSourceTextVisible) { HelpLabel(L("settings.liveSourceText"), help: L("settings.liveSourceTextCaption")) }
+                    .onChange(of: liveSourceTextVisible) {
+                        Preferences.liveSourceTextVisible = liveSourceTextVisible
+                        AppState.shared.liveSourceTextVisible = liveSourceTextVisible
+                    }
                 Toggle(isOn: $sourceTextVisible) { HelpLabel(L("settings.sourceText"), help: L("settings.sourceTextCaption")) }
                     .onChange(of: sourceTextVisible) {
                         Preferences.sourceTextVisible = sourceTextVisible
@@ -549,7 +722,8 @@ struct SettingsView: View {
                             .frame(width: 40, alignment: .trailing)
                     }
                 }
-                .disabled(!sourceTextVisible)
+                // The size applies to both source lines, live and history.
+                .disabled(!sourceTextVisible && !liveSourceTextVisible)
                 .onChange(of: sourceFontSize) {
                     Preferences.sourceFontSize = sourceFontSize
                     AppState.shared.sourceFontSize = sourceFontSize
@@ -635,26 +809,28 @@ struct SettingsView: View {
             // re-saves the identical value, which is harmless (same pattern as
             // the endpoint-change reload).
             openAIKey = OpenAICompatSession.apiKey(forBaseURL: Preferences.openAIBaseURL) ?? ""
-            // Both pickers share the one unified candidate list (every
-            // SpeechTranscriber locale); only the rescue entries differ.
+            // Language 1, and language 2 in the modes that recognize it, come
+            // from the recognizer's locales; one-direction translation gets the
+            // broad list, which starts with those same locales.
             let options = await Preferences.languageOptions()
             var sources = options
-            var targets = options
             // Capture the genuine capability list before the display-only
-            // rescue entries below pollute it (the swap guard depends on it).
+            // rescue entry below pollutes it (the mode and swap guards depend
+            // on it).
             supportedSourceIDs = Set(options.map(\.id))
-            // If the stored value is missing from the candidates (written directly
-            // via defaults, or a target saved back when the list was still
+            // If the stored value is missing from the candidates (written
+            // directly via defaults, or saved back when the list was still
             // Translation-framework-based), add the value itself so the Picker
-            // does not break.
+            // does not break. The target lists need no equivalent: they keep
+            // only what each mode may actually offer, and targetOptions
+            // appends the current selection when it is not among them.
             if !sources.contains(where: { $0.id == sourceID }) {
                 sources.append(Preferences.option(id: sourceID))
             }
-            if !targets.contains(where: { $0.id == targetID }) {
-                targets.append(Preferences.option(id: targetID))
-            }
             sourceOptions = sources
-            targetOptions = targets
+            recognizedTargetOptions = options
+            broadTargetOptions = await Preferences.translationTargetOptions()
+            capabilitiesLoaded = true
         }
         .sheet(item: $profileEditor) { context in
             ProfileEditorSheet(

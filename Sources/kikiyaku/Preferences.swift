@@ -12,7 +12,9 @@ struct LanguageOption: Identifiable, Sendable {
 /// `defaults write`, but the app itself only ever reads and writes the pair
 /// through this type — a half-updated combination the menu never offers
 /// cannot be observed.
-enum SessionMode: String, Sendable {
+enum SessionMode: String, Sendable, CaseIterable, Identifiable {
+    var id: String { rawValue }
+
     /// Language 1 is recognized and translated into language 2.
     case translate
     /// Both languages are recognized; each utterance is translated into the
@@ -113,8 +115,22 @@ enum Preferences {
         let maximal = Locale.Language(identifier: locale.language.maximalIdentifier)
         let code = maximal.languageCode?.identifier ?? locale.identifier
         let script = maximal.script?.identifier ?? ""
+        // Where the candidate list offers a language's regions as separate
+        // entries, choosing between them has to mean something: pt-BR and
+        // pt-PT share pt-Latn, and folding them together would decide "same
+        // language, nothing to translate" against a reader who deliberately
+        // picked the other one. Regions stay ignored everywhere else, so
+        // en-US → en-GB still needs no translation.
+        if let region = maximal.region?.identifier, regionalLanguages.contains(code) {
+            return "\(code)-\(script)-\(region)"
+        }
         return "\(code)-\(script)"
     }
+
+    /// Languages whose regions the target list publishes separately, and which
+    /// therefore have to survive the same-language test. Chinese and Serbian
+    /// are already told apart by their scripts.
+    private static let regionalLanguages: Set<String> = ["pt"]
 
     /// The mode selection resolved the way a session start resolves it:
     /// bidirectional only when the pair's languages actually differ
@@ -415,18 +431,47 @@ enum Preferences {
     static var sourceLocale: Locale { Locale(identifier: sourceLocaleID) }
     static var targetLocale: Locale { Locale(identifier: targetLocaleID) }
 
-    /// Candidates for both languages of the pair: every locale SpeechTranscriber
-    /// supports. The lists are deliberately identical (one source of truth): in
-    /// bidirectional mode language 2 is recognized too, so it must be a
-    /// SpeechTranscriber locale — and the LLM can translate into any language
-    /// anyway, so the former Translation-framework-based target list had no
-    /// real constraint to offer. Keeping the lists unified also avoids the
-    /// "switching modes invalidated my selected language" inconsistency.
+    /// Every locale SpeechTranscriber supports — the candidates for any
+    /// language that has to be recognized: language 1 always, and language 2 in
+    /// the modes that recognize both.
     static func languageOptions() async -> [LanguageOption] {
         let supported = await SpeechTranscriber.supportedLocales
         return supported
             .map { option(id: $0.identifier(.bcp47)) }
             .sorted { $0.id < $1.id }
+    }
+
+    /// Candidates for the translation target of the one-direction mode, where
+    /// the language is never recognized — only named to the LLM, which can
+    /// translate into anything. Holding this list down to the recognizer's
+    /// locales gave away the very thing translating with an LLM is good for.
+    ///
+    /// Three layers. The recognizer's own locales come first, because those are
+    /// the ones that also work in the modes that recognize both languages. Then
+    /// every ISO language Foundation both names and places in a locale — that
+    /// second half of the test is what keeps Avestan and Akkadian out of the
+    /// menu, and it is the whole test: a length limit would have thrown out
+    /// Cantonese, Filipino and Hawaiian along with them. Then the handful of
+    /// variants a bare language code cannot express but a translation has to
+    /// distinguish — none of which appear in Locale.availableIdentifiers, so
+    /// they have to be named here.
+    static func translationTargetOptions() async -> [LanguageOption] {
+        var seen = Set<String>()
+        let recognized = await languageOptions().filter { seen.insert($0.id).inserted }
+
+        let placed = Set(Locale.availableIdentifiers.compactMap {
+            Locale(identifier: $0).language.languageCode?.identifier
+        })
+        let variants = ["zh-Hans", "zh-Hant", "pt-BR", "pt-PT", "sr-Latn", "sr-Cyrl"]
+        let codes = Locale.LanguageCode.isoLanguageCodes
+            .map(\.identifier)
+            .filter { placed.contains($0) }
+
+        let rest = (variants + codes)
+            .filter { seen.insert($0).inserted }
+            .map { option(id: $0) }
+            .sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
+        return recognized + rest
     }
 
     static func option(id: String) -> LanguageOption {

@@ -59,6 +59,7 @@
 
 /* Settings */
 "settings.help" = "Help";
+"settings.warning" = "Warning";
 "settings.language" = "Display language";
 "settings.language.system" = "Follow System";
 "settings.languageRestartCaption" = "Takes effect after relaunching the app.";
@@ -73,6 +74,10 @@
 "settings.language.source.transcribe" = "Language";
 "settings.language.source.pair" = "Language 1";
 "settings.language.target.pair" = "Language 2";
+"settings.language.target.recognizedSection" = "Recognized as well";
+"settings.language.target.translationOnlySection" = "Translation only (quality depends on the model)";
+"settings.languageCaption.target" = "The target is not limited to the languages speech recognition supports, since only the source is recognized. But being selectable is not the same as being translated well: quality rests entirely on the model you use, and for the translation-only languages — the ones with fewer speakers above all — a model may return something unsteady or unusable. Try it before you rely on it.";
+"settings.languageCaption.targetUnused" = "This mode does not use it. It is shown because the language stored here is not one speech recognition supports, which is what keeps bidirectional translation and bilingual transcription out of reach; change it to a supported language to make them selectable again.";
 "settings.swapLanguages" = "⇄ Swap languages";
 "settings.swapUnsupportedCaption" = "Speech recognition does not support the language that would move into the recognition slot, so the pair cannot be swapped.";
 "settings.languageCaption.translate" = "The source language is recognized from speech and translated into the target language. Changes take effect the next time you start.";
@@ -84,6 +89,7 @@
 "settings.mode.bidirectional" = "Bidirectional translation";
 "settings.mode.transcribe" = "Transcription only";
 "settings.mode.bilingual" = "Bilingual transcription";
+"settings.modePairUnavailableCaption" = "Speech recognition does not support the target language (%@), so the modes that recognize both languages — bidirectional translation and bilingual transcription — cannot be selected. Choose a target the recognizer supports to switch to them.";
 "settings.modeCaption" = "One-direction translation: utterances in the source language are translated into the target language by the selected backend. Bidirectional translation: languages 1 and 2 are both recognized, each utterance's language is decided by recognition confidence, and it is translated into the other language (for meetings where both are spoken; provisional translation is disabled). Transcription only: the selected language is transcribed without translation (for minute-taking or saving quota). Bilingual transcription: both languages are recognized and recorded without translation. Takes effect the next time you start.";
 "settings.backend" = "Translation backend";
 "settings.backend.claude" = "Claude (CLI)";

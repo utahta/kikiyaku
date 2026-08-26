@@ -59,6 +59,7 @@
 
 /* Settings */
 "settings.help" = "説明";
+"settings.warning" = "警告";
 "settings.language" = "表示言語";
 "settings.language.system" = "システムに従う";
 "settings.languageRestartCaption" = "変更は再起動後に反映されます。";
@@ -73,6 +74,10 @@
 "settings.language.source.transcribe" = "言語";
 "settings.language.source.pair" = "言語1";
 "settings.language.target.pair" = "言語2";
+"settings.language.target.recognizedSection" = "音声認識にも対応";
+"settings.language.target.translationOnlySection" = "翻訳のみ（品質は使用モデル次第）";
+"settings.languageCaption.target" = "翻訳先は音声認識の対応言語に縛られません（認識するのは翻訳元だけのため）。ただし選べることと訳せることは別です。翻訳の品質は使用するモデルに依存し、「翻訳のみ」の言語、とくに話者数の少ない言語では、訳が不安定だったり期待した結果にならないことがあります。実際に試して確かめてください。";
+"settings.languageCaption.targetUnused" = "このモードでは使いません。ここに表示しているのは、保存されているこの言語が音声認識に対応しておらず、双方向翻訳と二言語文字起こしに切り替えられない原因になっているためです。対応した言語に変えると切り替えられるようになります。";
 "settings.swapLanguages" = "⇄ 言語を入れ替え";
 "settings.swapUnsupportedCaption" = "入れ替え先の言語に音声認識が対応していないため、入れ替えできません。";
 "settings.languageCaption.translate" = "翻訳元の言語を音声認識し、翻訳先の言語へ翻訳します。変更は次に開始したときから反映されます。";
@@ -84,6 +89,7 @@
 "settings.mode.bidirectional" = "双方向翻訳";
 "settings.mode.transcribe" = "文字起こしのみ";
 "settings.mode.bilingual" = "二言語文字起こし";
+"settings.modePairUnavailableCaption" = "翻訳先の「%@」は音声認識に対応していないため、両方の言語を認識するモード（双方向翻訳・二言語文字起こし）は選べません。切り替えるには翻訳先を音声認識に対応した言語にしてください。";
 "settings.modeCaption" = "単方向翻訳: 翻訳元の言語の発話を、選択中のバックエンドが翻訳先の言語へ翻訳します。双方向翻訳: 言語1・言語2の両方を認識し、発話ごとに信頼度で言語を判定して、それぞれもう一方の言語へ翻訳します（両言語が話される会議向け。仮訳は無効）。文字起こしのみ: 選択した言語を翻訳なしで文字起こしします（議事録用途や利用枠の節約に）。二言語文字起こし: 両言語を認識・判定し、翻訳なしで記録します。次に開始したときから反映されます。";
 "settings.backend" = "翻訳バックエンド";
 "settings.backend.claude" = "Claude（CLI）";
