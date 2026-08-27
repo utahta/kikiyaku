@@ -86,14 +86,18 @@ enum Preferences {
 
     private static let audioSourceKey = "audioSource"
 
-    /// Audio input source: "mic" (default) / "system" (what other apps are
-    /// playing, captured with a Core Audio process tap — for online meetings) /
-    /// "both" (both channels at once — e.g. your own voice plus the remote
-    /// participants of an online meeting).
+    /// Audio input source: "system" (default — whatever other apps are playing,
+    /// captured with a Core Audio process tap) / "mic" / "both" (both channels
+    /// at once, e.g. your own voice alongside the remote participants of a
+    /// call).
+    ///
+    /// System audio leads because it is what the app is mostly reached for: a
+    /// call, a video, a stream — speech the machine is playing and the listener
+    /// cannot replay. It also needs no microphone permission on first run.
     static var audioSource: String {
         get {
-            let value = UserDefaults.standard.string(forKey: audioSourceKey) ?? "mic"
-            return ["mic", "system", "both"].contains(value) ? value : "mic"
+            let value = UserDefaults.standard.string(forKey: audioSourceKey) ?? "system"
+            return ["mic", "system", "both"].contains(value) ? value : "system"
         }
         set { UserDefaults.standard.set(newValue, forKey: audioSourceKey) }
     }
