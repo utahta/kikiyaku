@@ -1,0 +1,37 @@
+cask "kikiyaku" do
+  version "__VERSION__"
+  sha256 "__SHA256__"
+
+  url "https://github.com/utahta/kikiyaku/releases/download/v#{version}/Kikiyaku_v#{version}_macos_arm64.zip"
+  name "Kikiyaku"
+  desc "Live transcription and translation in the menu bar"
+  homepage "https://github.com/utahta/kikiyaku"
+
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+
+  depends_on macos: :tahoe
+  depends_on arch: :arm64
+
+  app "Kikiyaku.app"
+
+  # Kikiyaku is not notarized, so macOS quarantines the download and refuses
+  # to open it, claiming the app is damaged. Clearing the flag here is what
+  # spares everyone installing through Homebrew from doing it by hand.
+  postflight do
+    system_command "/usr/bin/xattr",
+                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Kikiyaku.app"]
+  end
+
+  # Session transcripts live in ~/Library/Application Support/kikiyaku. They
+  # are the user's own records rather than application state, so they are
+  # deliberately left behind even by a zap.
+  zap trash: [
+    "~/Library/Caches/com.utahta.kikiyaku",
+    "~/Library/HTTPStorages/com.utahta.kikiyaku",
+    "~/Library/Preferences/com.utahta.kikiyaku.plist",
+    "~/Library/Saved Application State/com.utahta.kikiyaku.savedState",
+  ]
+end

@@ -72,4 +72,84 @@ jobs:
       - name: Publish
         run: |
           gh release upload "$TAG" "${{ steps.package.outputs.archive }}" --clobber
-          gh release edit "$TAG" --draft=false --latest
+          # Which release is the newest is decided in the job below.
+          gh release edit "$TAG" --draft=false
+
+  # The newest release is what both the latest pointer and the cask should
+  # name, so both are set from one answer rather than from whichever tag
+  # happened to start this run.
+  finalize:
+    needs: [tagpr, release]
+    if: needs.tagpr.outputs.tag != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # This job checks nothing out, so gh has no git remote to work the
+      # repository out from — and it does not read GITHUB_REPOSITORY on its
+      # own. Without this every gh call here fails with "not a git repository".
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Mark the newest release as the latest
+        id: newest
+        run: |
+          VERSION="$(gh release list --limit 100 \
+            --json tagName,isDraft --jq '.[] | select(.isDraft | not) | .tagName' \
+            | sed 's/^v//' | sort -V | tail -1)"
+          if [ -z "$VERSION" ]; then
+            echo "no published release to point at." >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          gh release edit "v${VERSION}" --latest
+          echo "latest is v${VERSION}"
+
+      - name: Update the Homebrew tap
+        env:
+          # Read in the script rather than an `if`: the secrets context is not
+          # one a step condition can see. The tap is another repository, which
+          # GITHUB_TOKEN cannot reach — without a token the release is already
+          # out and only the tap lags, so this skips instead of failing.
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ steps.newest.outputs.version }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN is unset; leaving the tap alone."
+            exit 0
+          fi
+
+          gh release download "v${VERSION}" --pattern '*.zip' --dir asset
+          SHA256="$(sha256sum asset/*.zip | awk '{print $1}')"
+
+          # The template comes from the tag being published, so that a re-run of
+          # an older workflow cannot pair the newest version with a cask
+          # definition predating it.
+          if ! gh api \
+            "repos/${GITHUB_REPOSITORY}/contents/packaging/homebrew/kikiyaku.rb.template?ref=v${VERSION}" \
+            --jq .content > template.b64 2>/dev/null; then
+            echo "v${VERSION} carries no cask template; leaving the tap alone."
+            exit 0
+          fi
+          base64 -d < template.b64 > template.rb
+
+          git clone -q \
+            "https://x-access-token:${TAP_TOKEN}@github.com/utahta/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          sed -e "s/__VERSION__/${VERSION}/g" -e "s/__SHA256__/${SHA256}/g" \
+            template.rb > tap/Casks/kikiyaku.rb
+
+          cd tap
+          # Staged before the comparison: on a tap that has never carried this
+          # cask the file is untracked, and a plain `git diff` would report
+          # nothing to do and push nothing.
+          git add Casks/kikiyaku.rb
+          if git diff --cached --quiet; then
+            echo "tap already at ${VERSION}"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -m "kikiyaku ${VERSION}"
+          git push -q
+          echo "tap updated to ${VERSION}"
