@@ -2,13 +2,24 @@
 # Build Kikiyaku.app: swift build -> assemble the .app bundle -> codesign.
 # Signs ad hoc by default. Set KIKIYAKU_CODESIGN_IDENTITY to use a stable identity
 # (ad-hoc signing resets TCC permissions on every rebuild).
+#
+# Set KIKIYAKU_DEBUG_LOG=1 to compile in the diagnostics in DebugLog.swift —
+# audio device changes and capture stalls, for chasing a fault that only shows
+# up on one machine. Left out of a normal build, so a release carries none of
+# it. Read the result with:
+#   log show --predicate 'process == "kikiyaku"' --last 1h
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 echo ">> swift build -c release"
-swift build -c release --arch arm64
+if [ -n "${KIKIYAKU_DEBUG_LOG:-}" ]; then
+    echo ">> debug logging: compiled in"
+    swift build -c release --arch arm64 -Xswiftc -DKIKIYAKU_DEBUG_LOG
+else
+    swift build -c release --arch arm64
+fi
 BINDIR="$(swift build -c release --arch arm64 --show-bin-path)"
 BIN="$BINDIR/kikiyaku"
 

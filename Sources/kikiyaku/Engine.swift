@@ -44,11 +44,24 @@ enum ChannelKind: String, Sendable {
 final class EpochBox: @unchecked Sendable {
     private let lock = NSLock()
     private var firstHostTime: UInt64?
+    private var lastBufferAt: SuspendingClock.Instant?
 
     func noteBuffer(hostTime: UInt64) {
-        guard hostTime != 0 else { return }
+        // The arrival is recorded whatever the hostTime says: a buffer with an
+        // unusable timestamp is still proof that audio is flowing, which is the
+        // only thing the watchdog is asking about.
+        //
+        // Monotonic, not Date: an elapsed time measured against the wall clock
+        // jumps whenever the OS corrects it, which would read as ten seconds of
+        // silence on a healthy session (see SessionClock on the same two
+        // clocks). Suspending rather than continuous, so that time asleep is
+        // not counted as time without audio — the machine waking is not a
+        // capture fault, and one that really did die is still caught, ten
+        // seconds later.
+        let now = SuspendingClock.now
         lock.lock()
-        if firstHostTime == nil { firstHostTime = hostTime }
+        if hostTime != 0, firstHostTime == nil { firstHostTime = hostTime }
+        lastBufferAt = now
         lock.unlock()
     }
 
@@ -56,6 +69,16 @@ final class EpochBox: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return firstHostTime
+    }
+
+    /// When audio last arrived on this channel. Both capture sources deliver
+    /// buffers continuously — the system tap fills them with silence when
+    /// nothing is playing — so a gap here means the capture has stopped, not
+    /// that the room went quiet.
+    var lastBuffer: SuspendingClock.Instant? {
+        lock.lock()
+        defer { lock.unlock() }
+        return lastBufferAt
     }
 }
 
@@ -133,6 +156,10 @@ private final class Channel {
     let kind: ChannelKind
     let epoch = EpochBox()
     var capture: (any AudioCaptureSource)?
+    /// When this channel's capture was started, so the watchdog can tell a
+    /// channel that has yet to deliver its first buffer from one that is merely
+    /// still coming up.
+    var captureStartedAt: SuspendingClock.Instant?
     var analyzer: SpeechAnalyzer?
     var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     var drainTasks: [Task<Void, Never>] = []
@@ -222,12 +249,18 @@ final class Engine {
     /// flight (used by requests, clears, and boundary retractions alike).
     private(set) var provisionalSequence = 0
     private var autoStopTask: Task<Void, Never>?
-    private var lastActivity = Date()
+    private var captureWatchTask: Task<Void, Never>?
+    /// Monotonic, for the same reason the capture watchdog is: a wall-clock
+    /// correction would otherwise read as minutes of silence and stop a session
+    /// that was working. Continuous rather than suspending, unlike the
+    /// watchdog: this one guards against a session left running and forgotten,
+    /// and a machine asleep for an hour is exactly that.
+    private var lastActivity = ContinuousClock.now
 
     /// Called whenever a recognition result (volatile or final) arrives;
     /// resets the silence timer.
     func noteActivity() {
-        lastActivity = Date()
+        lastActivity = ContinuousClock.now
     }
 
     /// Gate holding every drain's first result until the whole startup
@@ -560,6 +593,7 @@ final class Engine {
             for entry in pending {
                 let capture = entry.capture
                 try await Task.detached { try capture.start() }.value
+                entry.channel.captureStartedAt = SuspendingClock.now
             }
             // Phase 3: warm up and start every analyzer (the audio buffered
             // since phase 2 is processed once started), then attach the
@@ -639,8 +673,10 @@ final class Engine {
             } else {
                 AppDelegate.hideSecondPanel()
             }
-            lastActivity = Date()
+            lastActivity = ContinuousClock.now
             startAutoStopWatch()
+            startCaptureWatch()
+            AudioDeviceWatch.start()
             let sourceLabel: String = switch audioSource {
             case "system": L("source.system")
             case "both": L("source.both")
@@ -752,10 +788,69 @@ final class Engine {
                 guard let self, !Task.isCancelled else { return }
                 let minutes = Preferences.autoStopMinutes
                 guard minutes > 0, AppState.shared.isRunning else { continue }
-                if Date().timeIntervalSince(self.lastActivity) >= Double(minutes) * 60 {
+                if self.lastActivity.duration(to: .now) >= .seconds(minutes * 60) {
                     Task { @MainActor in
                         await Engine.shared.stop()
                         AppState.shared.status += LF("status.autoStopSuffix", minutes)
+                    }
+                    return
+                }
+            }
+        }
+    }
+
+    /// How long a channel may go without a buffer before its capture is taken
+    /// to be dead. Both sources deliver continuously, silence included, so this
+    /// only has to outlast a scheduling hiccup — not a pause in the
+    /// conversation.
+    private static let captureStallLimit: Duration = .seconds(10)
+
+    /// How long a channel that has never delivered gets before it is called
+    /// dead. Longer than the stall timeout: this window covers the capture
+    /// coming up, where the first buffer legitimately takes a moment.
+    private static let captureStartGrace: Duration = .seconds(15)
+
+    /// Watches for capture that has stopped delivering while the session still
+    /// believes it is running. Changing the audio device mid-session — plugging
+    /// in Bluetooth earphones, say — can leave the aggregate device or the
+    /// engine alive but silent, and without this the panel waits for words that
+    /// are never coming, with nothing to say that anything went wrong.
+    private func startCaptureWatch() {
+        captureWatchTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let self, !Task.isCancelled else { return }
+                guard AppState.shared.phase == .running else { continue }
+                let now = SuspendingClock.now
+                for channel in self.channels {
+                    // A channel that has never delivered a buffer is watched
+                    // too, on a longer fuse. Treating "nothing yet" as "not my
+                    // business" left the worst case unguarded: capture that
+                    // starts without error and never calls back at all, which
+                    // looks exactly like a running session with nothing to say.
+                    let silence: Duration
+                    let everDelivered: Bool
+                    if let last = channel.epoch.lastBuffer {
+                        silence = last.duration(to: now)
+                        everDelivered = true
+                        guard silence >= Self.captureStallLimit else { continue }
+                    } else if let started = channel.captureStartedAt {
+                        silence = started.duration(to: now)
+                        everDelivered = false
+                        guard silence >= Self.captureStartGrace else { continue }
+                    } else {
+                        continue
+                    }
+                    // Through debugLog, so a release build carries none of
+                    // it — the stop itself, and the reason shown in the
+                    // status line, do not depend on the flag.
+                    debugLog("%@ capture stalled — %@ for %llds, stopping",
+                             String(describing: channel.kind),
+                             everDelivered ? "no buffer" : "never delivered a buffer",
+                             silence.components.seconds)
+                    Task { @MainActor in
+                        await Engine.shared.stop()
+                        AppState.shared.status += L("status.captureStalledSuffix")
                     }
                     return
                 }
@@ -841,6 +936,9 @@ final class Engine {
     private func teardown() async {
         autoStopTask?.cancel()
         autoStopTask = nil
+        captureWatchTask?.cancel()
+        captureWatchTask = nil
+        AudioDeviceWatch.stop()
         // Release drains parked on the start gate (failure path — a no-op
         // after a successful start, which opened the gate). Left parked, the
         // drain awaits below would never return.

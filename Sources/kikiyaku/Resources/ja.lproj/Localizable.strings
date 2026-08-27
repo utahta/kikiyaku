@@ -40,6 +40,7 @@
 "status.stopSaveFailed" = "停止（保存に失敗: %@。履歴は保持しています）";
 "status.autoStopSuffix" = "（無音%d分で自動停止）";
 "status.outputDeviceChangedSuffix" = "（出力デバイスの変更により自動停止。もう一度開始してください）";
+"status.captureStalledSuffix" = "（音声が途切れたため自動停止しました。オーディオ機器の接続が変わった可能性があります。もう一度開始してください）";
 "source.mic" = "マイク";
 "source.system" = "システム音声";
 "source.both" = "マイク＋システム音声";

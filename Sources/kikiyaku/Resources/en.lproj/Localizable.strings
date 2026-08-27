@@ -40,6 +40,7 @@
 "status.stopSaveFailed" = "Stopped (saving failed: %@ — the transcript is kept in memory)";
 "status.autoStopSuffix" = " (auto-stopped after %d min of silence)";
 "status.outputDeviceChangedSuffix" = " (auto-stopped: the audio output device changed — press Start again)";
+"status.captureStalledSuffix" = " (auto-stopped: the audio stopped arriving, which usually means the audio device changed — press Start again)";
 "source.mic" = "microphone";
 "source.system" = "system audio";
 "source.both" = "mic + system audio";
