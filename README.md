@@ -72,11 +72,34 @@ For the bidirectional modes, earphones are recommended when capturing both the m
 
 Select **OpenAI-compatible (API / local)**, keep the URL `https://api.openai.com` and the model `gpt-5.6-terra` (the default — see [Choosing a model](#choosing-a-model)), and paste your API key. Keys are stored in the macOS Keychain, **per endpoint** (scheme, host, and port), and are only ever sent to that endpoint.
 
-### Backend: local server (LM Studio etc.)
+### Backend: local server (Ollama, LM Studio etc.)
 
-Select **OpenAI-compatible (API / local)** and point the URL at your server, e.g. `http://localhost:1234` (a trailing `/v1` also works). No key needed.
+Select **OpenAI-compatible (API / local)** and point the URL at your server — `http://localhost:11434` for Ollama, `http://localhost:1234` for LM Studio (a trailing `/v1` also works). No key needed.
 
-See [Choosing a model](#choosing-a-model) for which model to run.
+Any OpenAI-compatible server will do — llama.cpp, vLLM and the rest — and each can be set up however you prefer. What follows is one way, using Ollama:
+
+```sh
+brew install ollama                         # or download it from ollama.com
+
+# in one terminal — everything below talks to this
+OLLAMA_CONTEXT_LENGTH=16384 OLLAMA_KEEP_ALIVE=1h ollama serve
+
+# in another
+ollama run gemma4:26b-a4b-it-qat --think=false "hi"   # the 32 GB pick — see Choosing a model
+```
+
+The server has to be running before anything else: `ollama pull` and `ollama list` both talk to it and fail without it. `ollama run` downloads the model if it is not there yet, so it doubles as the first fetch — 16 GB, once. `--think=false` is there only so that this one command returns promptly instead of waiting out a paragraph of reasoning about the word "hi"; it says nothing about how Kikiyaku will use the model.
+
+Then point Kikiyaku at `http://localhost:11434` with the model name `gemma4:26b-a4b-it-qat`. `ollama ps` shows what is in memory and the context it was loaded with.
+
+Both environment variables are worth setting, because their defaults cause problems that are hard to attribute:
+
+- **`OLLAMA_CONTEXT_LENGTH`.** Kikiyaku sends the conversation so far with every request, which is what lets the translation keep terminology consistent and recover mis-recognized words. A long meeting reaches some 8,600 tokens of history, and a model loaded with less silently drops the oldest part of each request rather than refusing it — so the translation quietly stops benefiting from the context it appears to have. Kikiyaku asks the server how much context the model was loaded with and trims its history to fit, so nothing breaks either way; loading with more simply lets it keep more.
+- **`OLLAMA_KEEP_ALIVE`.** Ollama unloads an idle model after five minutes by default. Reloading takes tens of seconds, which lands in the middle of whatever is being said.
+
+Ollama listens on `127.0.0.1` only; set `OLLAMA_HOST=0.0.0.0:11434` to reach it from another machine.
+
+See [Choosing a model](#choosing-a-model) for which model to run on which machine.
 
 ### Backend: Claude CLI
 
@@ -94,9 +117,11 @@ Latency is what decides whether captions are usable, so the models behind each b
 
 | Machine | Model | Per utterance | |
 |---|---|---|---|
-| Apple Silicon, 64 GB | **qwen3.6-35b-a3b** (MoE, ~3B active, MLX 4bit) | **0.84 s** | best on both counts: fastest, and the most faithful with figures |
-| Apple Silicon, 32 GB | **gemma-4-26b-a4b-qat** (MoE, ~3.8B active) | 0.91 s\* | recommended because 15.6 GB loaded leaves the rest of a 32 GB machine room to work; a little looser with figures than the 64 GB pick |
+| Apple Silicon, 64 GB | **qwen3.6 35B A3B** (MoE, ~3B active, MLX 4bit) | **0.84 s** | best on both counts: fastest, and the most faithful with figures |
+| Apple Silicon, 32 GB | **gemma4 26B A4B QAT** (MoE, ~3.8B active) | 0.91 s\* | recommended because 15.6 GB loaded leaves the rest of a 32 GB machine room to work; a little looser with figures than the 64 GB pick |
 | Less than 32 GB | — | | nothing tried here fit with room to spare; a remote endpoint is the better answer |
+
+Model names differ by server: `gemma4:26b-a4b-it-qat` on Ollama is `google/gemma-4-26b-a4b-qat` in LM Studio, and `qwen3.6-35b-a3b` likewise carries a `qwen/` prefix there. `ollama list` and `lms ls` give the exact string to put in the settings.
 
 \* Every local figure was measured on the 64 GB machine. The 32 GB row says what fits there, not what it clocks there.
 
@@ -121,7 +146,7 @@ Measured through the persistent `claude` process, which is how this backend runs
 What the numbers amount to:
 
 - **Active parameters decide the speed, not the model's size.** An MoE model with about 3B active runs comfortably under a second, which is why the recommendations above are all MoE. A dense model of comparable total size took ten times as long in the same test — a dense 14B came in at 8.7 s per utterance, and a dense 27B was abandoned after one — so a model that is not MoE is unlikely to keep up whatever its size.
-- **Thinking has to be off.** With it left on, the same local model went from 0.8 s to 7.6 s per utterance. In LM Studio this is a per-model setting ("Enable Thinking"), and forgetting it is the usual reason a local backend feels broken.
+- **Thinking is time spent not translating**, and Kikiyaku asks for none of it. A model left to think produced 452–766 tokens of reasoning for a sentence whose translation is 17, taking 6.8–11.9 s instead of 0.3 s. The request carries `reasoning_effort: none` to every endpoint, which costs nothing where thinking was already off and saves that much where it was not, so there is no per-model setting to remember.
 - **A good local MoE model beats every remote backend on latency**, with nothing leaving the machine.
 - **Numbers are where the cheaper models give way.** A figure like "180 million units" comes back with the wrong magnitude, the wrong unit, or converted into a currency nobody asked for. The failure is not loud — the sentence still reads well — so if figures matter, stay with the larger models.
 

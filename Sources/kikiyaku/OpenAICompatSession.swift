@@ -85,14 +85,23 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     /// answer ever came. Guarded by stateLock.
     private var contextProbes = 0
     private var contextAdapted = false
-    /// On gpt-5-family cloud models, reasoning_effort=none helps speed (gpt-5.5
-    /// measured: default reasoning 2.0s → none 1.7s per utterance, no quality loss
-    /// as long as history context is present. "minimal" was removed in gpt-5.5, so
-    /// it is not used). Local servers such as LM Studio, however, interpret this
-    /// parameter as "enable thinking", overriding the model's Enable Thinking = off
-    /// setting and becoming ~10x slower (measured: 0.8s → 7.6s). Send it only when
-    /// connecting to OpenAI's cloud. The 400-response fallback is kept as well.
-    private var sendReasoningEffort: Bool
+    /// Whether to ask for no reasoning. Sent to every endpoint until one
+    /// refuses it, which the 400 fallback below then remembers.
+    ///
+    /// Reasoning is time spent not translating, and a model left to it spends a
+    /// great deal: 355–766 tokens of reasoning for a sentence whose translation
+    /// is 16, taking 6.2–11.9s instead of 0.6s. Asking for none brings that
+    /// back whether the server's own thinking setting is on or off, and costs
+    /// nothing when it was already off. Measured on gemma4 26B through both
+    /// Ollama and LM Studio, with the real prompt and 20 utterances of history.
+    ///
+    /// An earlier note here had it that local servers read this parameter as
+    /// "enable thinking" and became ten times slower, so it went to
+    /// api.openai.com alone. The measurement behind that had the cause the
+    /// wrong way round — those seconds were the model thinking, which the
+    /// parameter is what turns off — and Ollama, where thinking is on unless
+    /// asked otherwise, was left doing it on every utterance.
+    private var sendReasoningEffort = true
     /// Guarded by stateLock: both lanes call performChat concurrently and can
     /// write this (bad-URL path) while the main lane reads isAlive.
     private var alive = true
@@ -220,25 +229,63 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     /// having been trained on 32k. OpenAI's cloud publishes none of this, and
     /// answering nil is the correct outcome there.
     static func contextLength(baseURL: String, apiKey: String?, model: String) async -> Int? {
-        // The OpenAI-compatible listing carries none of this — LM Studio's
-        // returns id, object and owned_by, and that is the whole of it — so the
-        // question is put to its own API, which sits beside the compatible one
-        // on the same host. Anything else answers 404 and the caller keeps its
-        // default.
-        guard let entries = try? await listNativeModelEntries(baseURL: baseURL, apiKey: apiKey),
-              let entry = entries.first(where: { $0["id"] as? String == model })
-        else { return nil }
-
-        // Only the length the model was actually loaded with. max_context_length
-        // is what the weights could take — 262144 for a model LM Studio may
-        // well have loaded at 4096 — and sizing a history to it would overflow
-        // every request, which servers answer by dropping the front of the
-        // prompt in silence. A model that is not loaded reports no loaded
-        // length, and there is nothing to adapt to until it is.
-        if let loaded = entry["loaded_context_length"] as? Int, loaded > 0 {
+        // The OpenAI-compatible listing carries none of this — it returns ids
+        // and little else on both servers — so the question is put to whichever
+        // native API is beside it. Asking the wrong one costs a refusal and
+        // nothing else: Ollama 404s on LM Studio's route, LM Studio answers 200
+        // with an error object where Ollama's would be, and neither carries the
+        // key being looked for. An endpoint that is neither server refuses both
+        // and keeps the default.
+        //
+        // In both cases the figure has to be the length the model was loaded
+        // with, never what its weights could take: the latter reads 262144 for
+        // a model that may well be running at 4096, and a history sized to it
+        // would overflow every request — which servers answer by dropping the
+        // front of the prompt in silence.
+        if let entries = try? await listNativeModelEntries(baseURL: baseURL, apiKey: apiKey),
+           let entry = entries.first(where: { $0["id"] as? String == model }),
+           let loaded = entry["loaded_context_length"] as? Int, loaded > 0 {
+            return loaded
+        }
+        if let running = try? await listRunningModels(baseURL: baseURL, apiKey: apiKey),
+           let entry = running.first(where: {
+               namesTheSameOllamaModel($0["name"] as? String, model)
+           }),
+           let loaded = entry["context_length"] as? Int, loaded > 0 {
             return loaded
         }
         return nil
+    }
+
+    /// Whether two Ollama model names refer to the same model.
+    ///
+    /// A name without a tag means the `latest` one, and Ollama answers with the
+    /// tag filled in: ask for "gemma4" and it reports "gemma4:latest". Compared
+    /// as plain strings those miss each other, and the session would fall back
+    /// to a default history size while believing it had asked. Only the missing
+    /// tag is supplied — two names that each name a tag are the same model only
+    /// if they name the same one.
+    private static func namesTheSameOllamaModel(_ reported: String?, _ configured: String) -> Bool {
+        guard let reported else { return false }
+        func tagged(_ name: String) -> String {
+            name.contains(":") ? name : name + ":latest"
+        }
+        return tagged(reported) == tagged(configured)
+    }
+
+    /// Ollama's list of models currently in memory (GET /api/ps), which reports
+    /// the context each was loaded with — the figure OLLAMA_CONTEXT_LENGTH sets.
+    /// Its own model listing gives only what the weights support, and the
+    /// OpenAI-compatible one not even that.
+    private static func listRunningModels(
+        baseURL: String, apiKey: String?
+    ) async throws -> [[String: Any]] {
+        let data = try await nativeGet(path: "/api/ps", baseURL: baseURL, apiKey: apiKey)
+        guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = payload["models"] as? [[String: Any]] else {
+            throw OpenAICompatError.badResponse
+        }
+        return models
     }
 
     /// LM Studio's own model listing (GET /api/v0/models), which unlike the
@@ -246,23 +293,36 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     private static func listNativeModelEntries(
         baseURL: String, apiKey: String?
     ) async throws -> [[String: Any]] {
+        let data = try await nativeGet(path: "/api/v0/models", baseURL: baseURL, apiKey: apiKey)
+        guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let models = payload["data"] as? [[String: Any]] else {
+            throw OpenAICompatError.badResponse
+        }
+        return models
+    }
+
+    /// GETs a path on the server's own API, alongside the OpenAI-compatible one.
+    ///
+    /// Relative to whatever prefix the chat endpoint sits behind, never
+    /// absolute: an instance published at https://host/lm/v1 keeps its native
+    /// routes under /lm, and an absolute path would drop it and ask a proxy
+    /// about something it does not serve. endpointURL always normalizes to a
+    /// path ending in /chat/completions, so removing that and the /v1 before it
+    /// leaves exactly the prefix.
+    private static func nativeGet(
+        path: String, baseURL: String, apiKey: String?
+    ) async throws -> Data {
         guard let chat = endpointURL(baseURL: baseURL),
               var components = URLComponents(url: chat, resolvingAgainstBaseURL: false) else {
             throw OpenAICompatError.badURL
         }
-        // Relative to whatever prefix the chat endpoint sits behind, not
-        // absolute: an instance published at https://host/lm/v1 keeps its own
-        // listing at /lm/api/v0/models, and an absolute path would drop the
-        // /lm and ask a proxy about a route it does not have. endpointURL
-        // always normalizes to a path ending in /chat/completions, so removing
-        // that and the /v1 before it leaves exactly the prefix.
         var prefix = components.path
         for suffix in ["/v1/chat/completions", "/chat/completions"]
         where prefix.hasSuffix(suffix) {
             prefix = String(prefix.dropLast(suffix.count))
             break
         }
-        components.path = prefix + "/api/v0/models"
+        components.path = prefix + path
         guard let url = components.url else { throw OpenAICompatError.badURL }
 
         var request = URLRequest(url: url, timeoutInterval: 10)
@@ -273,11 +333,7 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw OpenAICompatError.badResponse
         }
-        guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let models = payload["data"] as? [[String: Any]] else {
-            throw OpenAICompatError.badResponse
-        }
-        return models
+        return data
     }
 
     private static func listModelEntries(
@@ -346,7 +402,7 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         self.apiKey = (apiKey?.isEmpty ?? true) ? nil : apiKey
         self.model = model
         self.systemPrompt = systemPrompt
-        self.sendReasoningEffort = (self.endpoint?.host() == "api.openai.com")
+
 
         probeContextLength()
     }
@@ -538,7 +594,21 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         guard http.statusCode == 200 else {
             let detail = String(decoding: data.prefix(400), as: UTF8.self)
             // Fallback for servers that reject reasoning_effort (retry once).
-            if includeEffort, http.statusCode == 400, detail.contains("reasoning_effort") {
+            //
+            // 422 as well as 400: the parameter now goes to every endpoint, and
+            // FastAPI-based servers — vLLM among them — answer an unknown field
+            // with 422 rather than 400. Refused there and not caught here, the
+            // request fails, and so does every request after it, since the next
+            // one carries the same parameter.
+            //
+            // Still only when the body names the parameter. A 422 means the
+            // request was malformed, and most of the ways that can happen have
+            // nothing to do with this field; retrying those without it would
+            // hide the real complaint behind a second identical failure.
+            if includeEffort,
+               http.statusCode == 400 || http.statusCode == 422,
+               detail.contains("reasoning_effort") {
+                debugLog("endpoint refused reasoning_effort (HTTP \(http.statusCode)); retrying without it")
                 disableReasoningEffort()
                 return try await performChat(messages: messages)
             }
