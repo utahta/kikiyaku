@@ -44,6 +44,50 @@ enum UtterancePayload {
     static func wrap(_ text: String, sourceID: String, targetID: String) -> String {
         "<u source=\"\(sourceID)\" target=\"\(targetID)\">\(text)</u>"
     }
+
+    /// Undoes wrap() when a model has copied the envelope into its answer.
+    ///
+    /// Models imitate the shape of what they are given, and the prompt's
+    /// instruction to return the translation alone is a request, not a
+    /// guarantee. Once one answer comes back wrapped it is recorded as
+    /// context, and every answer after it has that example to follow — the
+    /// panel fills with `<u source="en-US" target="ja-JP">…</u>` and stays
+    /// that way.
+    ///
+    /// Only the envelope this very request handed over is removed: the whole
+    /// answer must be one <u> element whose source and target are the ones
+    /// that were sent. A meeting about HTML can legitimately produce a
+    /// translation containing a <u> tag, and stripping on the tag alone would
+    /// quietly eat part of it. Attribute order and spacing are not assumed;
+    /// exactly one layer comes off.
+    /// The contents match greedily, so a nested </u> belongs to the contents
+    /// and only the outermost layer comes off.
+    static func unwrap(
+        _ response: String, sourceID: String, targetID: String
+    ) -> (text: String, stripped: Bool) {
+        let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Built per call rather than held in a static: a Regex is not Sendable,
+        // and this runs once per translation.
+        let envelope = /<u\s+([^>]*)>([\s\S]*)<\/u>/
+        guard let match = trimmed.wholeMatch(of: envelope) else { return (trimmed, false) }
+        let attributes = String(match.1)
+        guard attribute("source", in: attributes) == sourceID,
+              attribute("target", in: attributes) == targetID else {
+            return (trimmed, false)
+        }
+        return (String(match.2).trimmingCharacters(in: .whitespacesAndNewlines), true)
+    }
+
+    private static func attribute(_ name: String, in attributes: String) -> String? {
+        // Anchored to a name boundary, or `source` would be found inside
+        // `data-source` and a <u data-source="en-US"> in a translation about
+        // HTML would be taken for this request's own envelope and unwrapped.
+        // Built per call: the name varies, and this runs once per translation.
+        guard let pattern = try? Regex("(?:^|\\s)\(name)\\s*=\\s*\"([^\"]*)\""),
+              let match = attributes.firstMatch(of: pattern),
+              let value = match.output[1].substring else { return nil }
+        return String(value)
+    }
 }
 
 /// Locates the claude CLI executable. Can be set explicitly with
@@ -210,7 +254,19 @@ final class ClaudeSession: LLMTranslator, @unchecked Sendable {
             }
             guard let first = try await group.next() else { throw ClaudeError.badResponse }
             group.cancelAll()
-            return first
+            // Stripped here for the same reason as on the other backend, with
+            // one difference: this conversation is kept inside the claude
+            // process, so what it recorded of its own answer stays wrapped and
+            // may go on prompting the next. Only the display can be put right
+            // — worth doing on its own, and cheaper than dropping the meeting's
+            // context to start a clean session over a pair of tags.
+            let (result, stripped) = UtterancePayload.unwrap(
+                first, sourceID: sourceID, targetID: targetID)
+            if stripped {
+                debugLog("claude backend echoed the <u> envelope on \(sourceID)->\(targetID)")
+            }
+            guard !result.isEmpty else { throw ClaudeError.badResponse }
+            return result
         }
     }
 
