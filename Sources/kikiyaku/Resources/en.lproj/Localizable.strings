@@ -21,6 +21,7 @@
 "panel.translating" = "Translating";
 "panel.recognizing" = "Recognizing";
 "panel.provisionalKept" = "Provisional (final translation failed)";
+"panel.dismissNotice" = "Dismiss";
 
 /* Status */
 "status.idle" = "Idle";
@@ -40,13 +41,17 @@
 "status.stopSaveFailed" = "Stopped (saving failed: %@ — the transcript is kept in memory)";
 "status.autoStopSuffix" = " (auto-stopped after %d min of silence)";
 "status.outputDeviceChangedSuffix" = " (auto-stopped: the audio output device changed — press Start again)";
-"status.captureStalledSuffix" = " (auto-stopped: the audio stopped arriving, which usually means the audio device changed — press Start again)";
 "source.mic" = "microphone";
 "source.system" = "system audio";
 "source.both" = "mic + system audio";
 "status.recognitionErrorSuffix" = " (auto-stopped on recognition error: %@)";
 "status.missingConfidenceSuffix" = " — recognition is returning no confidence scores, so the spoken language cannot be judged and utterances are being discarded. Switch to a one-direction mode.";
 "status.llmStoppedNone" = "%@ translation stopped (repeated failures). Continuing without translation for this session";
+
+/* Panel notices */
+"notice.captureRecovering" = "The %@ stopped arriving; reconnecting…";
+"notice.captureRecovered" = "The %@ is back. Whatever was said during the outage was not captured.";
+"notice.captureStopped" = "Stopped: the %@ stopped arriving, which usually means the audio devices changed. Press record to start again.";
 
 /* Translations */
 "translation.failed" = "[translation failed]";
@@ -57,6 +62,7 @@
 "error.micDenied" = "Microphone access is not allowed";
 "error.speechDenied" = "Speech recognition is not allowed (enable it in System Settings > Privacy & Security > Speech Recognition)";
 "error.languageUnsupported" = "Speech recognition does not support %@ — choose a supported language in the settings";
+"error.captureLostDeviceDuringStart" = "The audio devices for the %@ changed while starting. Press record to start again.";
 
 /* Settings */
 "settings.help" = "Help";

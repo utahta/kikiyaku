@@ -8,10 +8,21 @@ import Speech
 protocol AudioCaptureSource: Sendable {
     func start() throws
     func stop()
+
+    /// Whether the capture is still in a position to deliver.
+    ///
+    /// Buffers arriving is not the same question. The system tap stops
+    /// delivering the moment nothing is playing, so silence there says only
+    /// that the room is quiet — while a device pulled out from under the
+    /// capture leaves it delivering nothing for the same reason it will never
+    /// deliver again. This tells the two apart.
+    var isAlive: Bool { get }
 }
 
 /// Captures the microphone, converts buffers to the analyzer's format, and hands
-/// AnalyzerInput to the callback. The tap callback runs on a Core Audio thread.
+/// them to the callback. What the analyzer is told about each buffer's place in
+/// the timeline is decided by the engine, which is the only party that knows
+/// whether the capture has just been rebuilt. The tap callback runs on a Core Audio thread.
 /// @unchecked: start/stop are serialized by the engine (see AudioCaptureSource).
 ///
 /// The callback also receives the buffer's mach hostTime so the engine can
@@ -20,7 +31,8 @@ protocol AudioCaptureSource: Sendable {
 final class MicSource: AudioCaptureSource, @unchecked Sendable {
     private let engine = AVAudioEngine()
 
-    init(analyzerFormat: AVAudioFormat, onChunk: @escaping @Sendable (AnalyzerInput, UInt64) -> Void) throws {
+    init(analyzerFormat: AVAudioFormat,
+         onChunk: @escaping @Sendable (AVAudioPCMBuffer, UInt64) -> Void) throws {
         let input = engine.inputNode
         let micFormat = input.outputFormat(forBus: 0)
         guard micFormat.sampleRate > 0,
@@ -30,7 +42,7 @@ final class MicSource: AudioCaptureSource, @unchecked Sendable {
         let box = ConverterBox(converter: converter, targetFormat: analyzerFormat)
         input.installTap(onBus: 0, bufferSize: 4096, format: micFormat) { buffer, when in
             if let converted = box.convert(buffer) {
-                onChunk(AnalyzerInput(buffer: converted), when.hostTime)
+                onChunk(converted, when.hostTime)
             }
         }
     }
@@ -44,6 +56,10 @@ final class MicSource: AudioCaptureSource, @unchecked Sendable {
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
     }
+
+    /// An AVAudioEngine loses its connections and stops when the audio devices
+    /// are rearranged under it, which is exactly the fault being watched for.
+    var isAlive: Bool { engine.isRunning }
 }
 
 /// AVAudioConverter is not Sendable, but each box instance is only ever touched

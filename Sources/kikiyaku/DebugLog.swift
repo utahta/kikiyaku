@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Diagnostics for faults that only appear on someone else's machine — a
 /// capture that dies when the audio devices are rearranged, say, which has
@@ -8,16 +9,21 @@ import Foundation
 ///
 /// Read the result with:
 ///
-///     log show --predicate 'process == "kikiyaku"' --last 1h
+///     log show --predicate 'subsystem == "com.utahta.kikiyaku"' --last 1h
 ///
-/// Nothing here may carry what was said. NSLog reaches the unified log, which
-/// anyone on the machine can read and which a sysdiagnose carries off it, so
-/// these lines stay with counts, kinds and timings — never recognized text, and
-/// never a device name, which routinely holds its owner's own name.
+/// Marked public, without which the unified log redacts every interpolated
+/// value as `<private>` and the line says nothing it was written to say. That
+/// redaction is a privacy default worth respecting, which is why nothing here
+/// may carry what was said: these lines hold counts, kinds and timings — never
+/// recognized text, and never a device name, which routinely holds its owner's
+/// own name.
+private let debugLogger = Logger(subsystem: "com.utahta.kikiyaku", category: "diagnostics")
+
 @inline(__always)
-func debugLog(_ format: String, _ args: CVarArg...) {
+func debugLog(_ message: @autoclosure () -> String) {
     #if KIKIYAKU_DEBUG_LOG
-    withVaList(args) { NSLogv("kikiyaku[debug]: " + format, $0) }
+    let text = message()
+    debugLogger.notice("\(text, privacy: .public)")
     #endif
 }
 

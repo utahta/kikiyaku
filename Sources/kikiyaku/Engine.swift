@@ -14,6 +14,12 @@ enum KikiyakuError: Error, CustomStringConvertible {
     /// (BCP-47 id attached). Reachable through display-only rescue entries in
     /// the settings (a stored language the recognizer does not support).
     case languageUnsupported(String)
+    /// A capture's audio device went away between its start and the session's
+    /// commit — too late to rebuild into a session that does not exist yet,
+    /// and too early to be caught by anything watching a running one. Carries
+    /// the capture's display name, not its identifier: this reaches the status
+    /// line.
+    case captureLostDeviceDuringStart(String)
 
     var description: String {
         switch self {
@@ -26,6 +32,8 @@ enum KikiyakuError: Error, CustomStringConvertible {
             return message
         case .languageUnsupported(let id):
             return LF("error.languageUnsupported", id)
+        case .captureLostDeviceDuringStart(let name):
+            return LF("error.captureLostDeviceDuringStart", name)
         }
     }
 }
@@ -44,24 +52,10 @@ enum ChannelKind: String, Sendable {
 final class EpochBox: @unchecked Sendable {
     private let lock = NSLock()
     private var firstHostTime: UInt64?
-    private var lastBufferAt: SuspendingClock.Instant?
 
     func noteBuffer(hostTime: UInt64) {
-        // The arrival is recorded whatever the hostTime says: a buffer with an
-        // unusable timestamp is still proof that audio is flowing, which is the
-        // only thing the watchdog is asking about.
-        //
-        // Monotonic, not Date: an elapsed time measured against the wall clock
-        // jumps whenever the OS corrects it, which would read as ten seconds of
-        // silence on a healthy session (see SessionClock on the same two
-        // clocks). Suspending rather than continuous, so that time asleep is
-        // not counted as time without audio — the machine waking is not a
-        // capture fault, and one that really did die is still caught, ten
-        // seconds later.
-        let now = SuspendingClock.now
         lock.lock()
         if hostTime != 0, firstHostTime == nil { firstHostTime = hostTime }
-        lastBufferAt = now
         lock.unlock()
     }
 
@@ -69,16 +63,6 @@ final class EpochBox: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return firstHostTime
-    }
-
-    /// When audio last arrived on this channel. Both capture sources deliver
-    /// buffers continuously — the system tap fills them with silence when
-    /// nothing is playing — so a gap here means the capture has stopped, not
-    /// that the room went quiet.
-    var lastBuffer: SuspendingClock.Instant? {
-        lock.lock()
-        defer { lock.unlock() }
-        return lastBufferAt
     }
 }
 
@@ -125,12 +109,6 @@ final class StreamFailureBox: @unchecked Sendable {
 /// basis, so relative order and spacing survive whatever the wall clock does.
 /// The next session takes a fresh anchor.
 struct SessionClock: Sendable {
-    private static let secondsPerTick: Double = {
-        var info = mach_timebase_info_data_t()
-        mach_timebase_info(&info)
-        return Double(info.numer) / Double(info.denom) / 1_000_000_000
-    }()
-
     private let anchorHostTime: UInt64
     private let anchorDate: Date
 
@@ -140,7 +118,7 @@ struct SessionClock: Sendable {
     }
 
     func date(hostTime: UInt64) -> Date {
-        let delta = (Double(hostTime) - Double(anchorHostTime)) * Self.secondsPerTick
+        let delta = (Double(hostTime) - Double(anchorHostTime)) * machSecondsPerTick
         return anchorDate.addingTimeInterval(delta)
     }
 }
@@ -158,11 +136,39 @@ private final class Channel {
     var capture: (any AudioCaptureSource)?
     /// When this channel's capture was started, so the watchdog can tell a
     /// channel that has yet to deliver its first buffer from one that is merely
-    /// still coming up.
+    /// still coming up. Reset by a rebuild, which starts the wait over.
     var captureStartedAt: SuspendingClock.Instant?
     var analyzer: SpeechAnalyzer?
     var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
     var drainTasks: [Task<Void, Never>] = []
+
+    /// Retires the callbacks of a capture this channel has replaced.
+    let gate = CaptureGate()
+    /// The analyzer's format, kept so a replacement capture can be built to
+    /// match the analyzer that is still running.
+    var format: AVAudioFormat?
+    /// Set while a replacement capture is being tried, so the watchdog leaves
+    /// the channel alone until the attempt has had its say.
+    var recovering = false
+    /// The attempt itself, held so that teardown can cancel it and wait for it
+    /// to finish. A rebuild left running past the end of a session would go on
+    /// to start a capture nobody is listening to.
+    var recoveryTask: Task<Void, Never>?
+    /// Since when the capture's device has been answering as dead, so that a
+    /// device that blinks out for an instant is not mistaken for one that has
+    /// gone for good.
+    var deadSince: SuspendingClock.Instant?
+    /// Set when the capture reported its device invalid before the session had
+    /// finished starting. Such a report cannot be acted on where it arrives —
+    /// there is no running session to rebuild a channel of — and the source
+    /// fires it once only, so a start that ignored it would commit a session
+    /// around a capture already known to be broken.
+    var invalidatedDuringStartup = false
+    /// When this channel's capture last came back from a rebuild. A capture
+    /// that dies again within the proving period is not one a further rebuild
+    /// is going to fix, and rebuilding it on every stall would leave a session
+    /// flapping instead of saying something is wrong.
+    var provedAt: SuspendingClock.Instant?
 
     init(kind: ChannelKind) {
         self.kind = kind
@@ -250,6 +256,15 @@ final class Engine {
     private(set) var provisionalSequence = 0
     private var autoStopTask: Task<Void, Never>?
     private var captureWatchTask: Task<Void, Never>?
+    /// The channel whose volatile text drives the provisional lane, and the
+    /// flag by which a rebuild asks that lane's sentence tracker to start over.
+    /// The tracker itself belongs to a detached drain and is never touched
+    /// from here.
+    private var provisionalOwnerKind: ChannelKind?
+    private var provisionalResetFlag: TrackerResetFlag?
+    /// Languages this session recognizes, for clearing one channel's live
+    /// slots without touching another's.
+    private var recognizedLanguageIDs: [String] = []
     /// Monotonic, for the same reason the capture watchdog is: a wall-clock
     /// correction would otherwise read as minutes of silence and stop a session
     /// that was working. Continuous rather than suspending, unlike the
@@ -542,6 +557,7 @@ final class Engine {
                 && provisionalPreference
             let sessionBox: LLMSessionBox? = provisionalEnabled ? LLMSessionBox() : nil
             let tracker: SentenceTracker? = provisionalEnabled ? SentenceTracker(locale: sourceLocale) : nil
+            let trackerReset = TrackerResetFlag()
             if let sessionBox, let llmFactory {
                 // Create the first session before any lane starts. Created
                 // inside the lane task, session setup races the recognition
@@ -569,6 +585,9 @@ final class Engine {
             // the user cannot know), else the mic. Two volatile streams through
             // one sentence tracker would corrupt its boundary detection.
             let provisionalOwner: ChannelKind = channelKinds.contains(.system) ? .system : .mic
+            provisionalOwnerKind = provisionalOwner
+            provisionalResetFlag = trackerReset
+            recognizedLanguageIDs = recognizedLocales.map { $0.identifier(.bcp47) }
             let gate = StartGate()
             startGate = gate
             // Channel startup runs in phases across ALL channels, not one
@@ -618,6 +637,7 @@ final class Engine {
                         epoch: entry.channel.epoch,
                         clock: clock,
                         tracker: channelTracker,
+                        trackerReset: trackerReset,
                         bidirectional: bidirectional,
                         gate: gate,
                         failures: failures))
@@ -644,9 +664,20 @@ final class Engine {
             // per-channel finalized watermarks, which must happen before the
             // gate opens (the new session's audio timeline restarts at zero —
             // an old watermark would swallow all of its volatiles).
+            // A capture that lost its device while the rest of the session was
+            // still coming up cannot be rebuilt after the fact: the report
+            // arrives once, and for the system tap nothing downstream would
+            // ever notice — it is silent when idle, so no watchdog can tell a
+            // broken capture from a quiet machine. Refuse the start instead of
+            // committing a session around it. Thrown before any state is
+            // cleared, so a refused start leaves the previous transcript alone.
+            if let broken = channels.first(where: { $0.invalidatedDuringStartup }) {
+                throw KikiyakuError.captureLostDeviceDuringStart(captureName(broken.kind))
+            }
             // One session = one saved file, so clear the history on every start.
             state.utterances.removeAll()
             state.clearLive()
+            state.notice = nil
             // The dedup's memory is per session: the audio timeline restarts
             // at zero, so a previous session's spans would match this one's
             // opening utterances. Safe here — the gate still holds every
@@ -799,15 +830,26 @@ final class Engine {
         }
     }
 
-    /// How long a channel may go without a buffer before its capture is taken
-    /// to be dead. Both sources deliver continuously, silence included, so this
-    /// only has to outlast a scheduling hiccup — not a pause in the
-    /// conversation.
-    private static let captureStallLimit: Duration = .seconds(10)
+    /// How long a microphone may go without a buffer before its capture is
+    /// taken to be dead. A microphone delivers whether or not anyone is
+    /// speaking, so silence here is a fault — but audio does drop for a moment
+    /// when devices are rearranged, and stopping a session mid-meeting costs
+    /// more than noticing a dead capture a few seconds late.
+    ///
+    /// The system tap gets no such limit. It stops delivering the moment
+    /// nothing is playing, which is an ordinary state of affairs and not a
+    /// fault; it is judged by whether its device is still alive instead.
+    private static let micStallLimit: Duration = .seconds(20)
 
-    /// How long a channel that has never delivered gets before it is called
-    /// dead. Longer than the stall timeout: this window covers the capture
-    /// coming up, where the first buffer legitimately takes a moment.
+    /// How long a dead-looking device is given to come back before the capture
+    /// is rebuilt. Devices do vanish for an instant while a USB switch hands
+    /// them over, and a rebuild started into that moment would fail for a
+    /// reason that was about to resolve itself.
+    private static let deviceDeadGrace: Duration = .seconds(6)
+
+    /// How long a channel that has never delivered gets. A capture that has
+    /// produced nothing at all since it started did not hit an interruption,
+    /// it never began.
     private static let captureStartGrace: Duration = .seconds(15)
 
     /// Watches for capture that has stopped delivering while the session still
@@ -822,37 +864,64 @@ final class Engine {
                 guard let self, !Task.isCancelled else { return }
                 guard AppState.shared.phase == .running else { continue }
                 let now = SuspendingClock.now
-                for channel in self.channels {
+                for channel in self.channels where !channel.recovering {
                     // A channel that has never delivered a buffer is watched
                     // too, on a longer fuse. Treating "nothing yet" as "not my
                     // business" left the worst case unguarded: capture that
                     // starts without error and never calls back at all, which
                     // looks exactly like a running session with nothing to say.
-                    let silence: Duration
-                    let everDelivered: Bool
-                    if let last = channel.epoch.lastBuffer {
-                        silence = last.duration(to: now)
-                        everDelivered = true
-                        guard silence >= Self.captureStallLimit else { continue }
-                    } else if let started = channel.captureStartedAt {
-                        silence = started.duration(to: now)
-                        everDelivered = false
-                        guard silence >= Self.captureStartGrace else { continue }
-                    } else {
-                        continue
+                    guard let reason = self.faultOf(channel, now: now) else { continue }
+                    // Through debugLog, so a release build carries none of it —
+                    // what the session does about the fault does not depend on
+                    // the flag.
+                    debugLog("\(channel.kind.rawValue) capture faulted: \(reason)")
+
+                    // A capture that dies again this soon after coming back is
+                    // not one another rebuild will fix; rebuilding regardless
+                    // would leave the session flapping while the panel filled
+                    // with gaps.
+                    //
+                    // For a microphone this is measured to the last buffer that
+                    // arrived — the time audio was actually flowing. Measuring
+                    // to now would count the stall itself, and a capture that
+                    // delivered one buffer and died would look like healthy
+                    // running by the time the watchdog noticed. A system tap
+                    // has no such measure, since it is silent whenever nothing
+                    // plays; there, the time its device stayed alive is what
+                    // healthy means.
+                    if let proved = channel.provedAt {
+                        // The end of the healthy stretch is when the fault
+                        // began, not when it was confirmed: the device's grace
+                        // period is time already spent dead, and counting it as
+                        // time well spent would credit a capture that lasted
+                        // twenty-five seconds with thirty-one.
+                        let failedAt = channel.deadSince ?? now
+                        let healthy: Duration = channel.kind == .mic
+                            ? (channel.gate.lastArrivalAt.map { proved.duration(to: $0) } ?? .zero)
+                            : proved.duration(to: failedAt)
+                        if healthy < Self.rebuildProvingPeriod {
+                            debugLog("\(channel.kind.rawValue) lasted only \(healthy.components.seconds)s after its rebuild; stopping")
+                            AppState.shared.notice = PanelNotice(
+                                kind: .warning,
+                                message: LF("notice.captureStopped",
+                                            self.captureName(channel.kind)))
+                            Task { @MainActor in
+                                await Engine.shared.stop()
+                            }
+                            return
+                        }
                     }
-                    // Through debugLog, so a release build carries none of
-                    // it — the stop itself, and the reason shown in the
-                    // status line, do not depend on the flag.
-                    debugLog("%@ capture stalled — %@ for %llds, stopping",
-                             String(describing: channel.kind),
-                             everDelivered ? "no buffer" : "never delivered a buffer",
-                             silence.components.seconds)
+
+                    let stalled = channel
                     Task { @MainActor in
-                        await Engine.shared.stop()
-                        AppState.shared.status += L("status.captureStalledSuffix")
+                        Engine.shared.beginRecovery(stalled)
                     }
-                    return
+                    // Only this sweep ends. Returning would retire the watch
+                    // itself, and the rebuild it just asked for is the very
+                    // thing that most needs watching afterwards — a channel
+                    // that recovers and stalls again would then go unnoticed
+                    // for the rest of the session.
+                    break
                 }
             }
         }
@@ -897,29 +966,8 @@ final class Engine {
         channel.inputContinuation = inputCont
         channel.analyzer = analyzer
 
-        let epoch = channel.epoch
-        let capture: any AudioCaptureSource
-        if kind == .system {
-            let systemSource = SystemAudioSource(analyzerFormat: format) { input, hostTime in
-                epoch.noteBuffer(hostTime: hostTime)
-                inputCont.yield(input)
-            }
-            // The aggregate goes silently dead when the default output device
-            // changes; stop cleanly instead of appearing to run while
-            // capturing nothing.
-            systemSource.onDeviceInvalidated = {
-                Task { @MainActor in
-                    await Engine.shared.stop()
-                    AppState.shared.status += L("status.outputDeviceChangedSuffix")
-                }
-            }
-            capture = systemSource
-        } else {
-            capture = try MicSource(analyzerFormat: format) { input, hostTime in
-                epoch.noteBuffer(hostTime: hostTime)
-                inputCont.yield(input)
-            }
-        }
+        channel.format = format
+        let capture = try makeCapture(for: channel, resuming: false)
         channel.capture = capture
         return PendingChannel(
             channel: channel,
@@ -931,6 +979,294 @@ final class Engine {
         )
     }
 
+    /// What is wrong with a channel's capture, or nil while it is fine.
+    ///
+    /// The two sources fail visibly in different ways, so they are asked
+    /// different questions. A microphone delivers continuously whether or not
+    /// anyone speaks, so silence from one is itself the fault, and so is
+    /// having delivered nothing since it started. The system tap delivers only
+    /// while something is playing: silence there says nothing, a session begun
+    /// on a quiet machine legitimately receives no buffer at all, and neither
+    /// question may be put to it. Whether its device still answers is the whole
+    /// of what can be asked.
+    ///
+    /// This asymmetry is measured, not assumed — a watchdog that asked both
+    /// sources about buffers stopped healthy sessions three different ways
+    /// before the logs settled it.
+    private func faultOf(_ channel: Channel, now: SuspendingClock.Instant) -> String? {
+        // A capture whose device has stopped answering is dead whichever kind
+        // it is, and says so far sooner than any silence could.
+        if let capture = channel.capture, !capture.isAlive {
+            let since = channel.deadSince ?? now
+            channel.deadSince = since
+            guard since.duration(to: now) >= Self.deviceDeadGrace else { return nil }
+            return "its device stopped answering"
+        }
+        channel.deadSince = nil
+
+        // Past this point the question is about buffers, which only a
+        // microphone owes continuously. A system tap that has delivered
+        // nothing has most likely been given nothing to deliver — silence on
+        // the machine is not a fault, and its device answering above is the
+        // whole of what can be asked of it.
+        guard channel.kind == .mic else { return nil }
+
+        guard let lastArrival = channel.gate.lastArrivalAt else {
+            // Nothing at all since it started: not an interruption, a capture
+            // that never began.
+            guard let started = channel.captureStartedAt,
+                  started.duration(to: now) >= Self.captureStartGrace else { return nil }
+            return "it never delivered a buffer"
+        }
+
+        let silence = lastArrival.duration(to: now)
+        guard silence >= Self.micStallLimit else { return nil }
+        return "no buffer for \(silence.components.seconds)s"
+    }
+
+    /// Waits between rebuild attempts. The first is immediate — a capture that
+    /// died on a device that has already settled comes back at once — and the
+    /// later ones give the hardware time to finish rearranging itself. Each
+    /// delay is taken *before* the attempt it belongs to.
+    private static let rebuildBackoff: [Duration] = [.zero, .seconds(5), .seconds(10)]
+
+    /// How long a rebuilt capture has to keep delivering before the failure
+    /// count is cleared. A single buffer is not proof: a capture that delivers
+    /// one and dies again would reset the count every time and rebuild for the
+    /// rest of the session.
+    private static let rebuildProvingPeriod: Duration = .seconds(30)
+
+    /// Replaces a channel's capture, keeping the session — analyzer, history,
+    /// and the translator's memory of the conversation — intact. Stopping and
+    /// starting over would clear the panel (one session, one saved file) and
+    /// leave the translation without the conversation behind it.
+    ///
+    /// Gives up after `rebuildBackoff.count` attempts and stops the session as
+    /// before, which is the honest outcome once the audio is not coming back.
+    /// Takes a capture's report that its device is gone. A running session
+    /// rebuilds the channel; a session still starting cannot, and records it
+    /// instead for the commit to find. The report comes once and once only, so
+    /// dropping it here would leave nothing to notice it later — least of all
+    /// for the system tap, which is silent when idle and so cannot be judged
+    /// by whether buffers arrive.
+    fileprivate func noteDeviceInvalidated(_ channel: Channel) {
+        guard AppState.shared.phase == .running else {
+            channel.invalidatedDuringStartup = true
+            return
+        }
+        beginRecovery(channel)
+    }
+
+    /// Starts a rebuild and keeps hold of it, so that stopping the session can
+    /// cancel it and wait rather than race it.
+    fileprivate func beginRecovery(_ channel: Channel) {
+        guard sessionAcceptsRecovery, !channel.recovering else { return }
+        channel.recovering = true
+        channel.recoveryTask = Task { @MainActor [weak channel] in
+            guard let channel else { return }
+            await Engine.shared.recoverCapture(channel)
+            channel.recovering = false
+        }
+    }
+
+    private func recoverCapture(_ channel: Channel) async {
+
+        let kind = channel.kind
+        let recovering = PanelNotice(
+            kind: .warning, message: LF("notice.captureRecovering", captureName(kind)))
+        AppState.shared.notice = recovering
+        // Every way out of here that is not "recovered" or "gave up" leaves
+        // through a stillWanted check — a stop, an auto-stop, a cancellation
+        // mid-wait — and would otherwise leave the panel saying it is
+        // reconnecting over a session that has ended. Cleared only while it is
+        // still this notice on screen: a later warning is newer news.
+        defer {
+            if AppState.shared.notice?.id == recovering.id {
+                AppState.shared.notice = nil
+            }
+        }
+        // Whatever was mid-sentence on this channel when its audio stopped
+        // will never finish, so it comes off the screen. Only this channel's
+        // slots: with both sources running, the other one is still listening,
+        // and clearing the session's live state wholesale would blank a panel
+        // that has nothing wrong with it — along with the finalized watermarks
+        // that keep late volatiles from resurrecting finished rows.
+        for language in recognizedLanguageIDs {
+            AppState.shared.clearLiveSlot(channel: kind.rawValue, language: language)
+        }
+        // The provisional lane follows one channel; leave it alone when the
+        // channel that stopped is not that one. Its sentence tracker is reset
+        // with it — the utterance it was measuring ends here, and left in
+        // place its record of the previous sentences would be compared against
+        // whatever the rebuilt capture hears first.
+        if kind == provisionalOwnerKind {
+            // Raised, not applied: the tracker is the drain's, and resetting it
+            // from here would run alongside its update().
+            provisionalResetFlag?.raise()
+            invalidateProvisional()
+        }
+
+        for (attempt, delay) in Self.rebuildBackoff.enumerated() {
+            if delay > .zero {
+                try? await Task.sleep(for: delay)
+            }
+            guard stillWanted(channel) else { return }
+
+            // Retiring the generation first: the old capture's callbacks stop
+            // being heard here, not when it finally stops, so nothing it has
+            // in flight can be mistaken for the new one delivering.
+            let previous = channel.capture
+            channel.capture = nil
+            channel.captureStartedAt = nil
+            // The old capture's death is dealt with; a new one starts with no
+            // history of having been dead, or the next healthy-stretch
+            // measurement would end at a moment that predates it.
+            channel.deadSince = nil
+            // Retire before stopping, and before forgetting the arrival: a
+            // buffer already in flight on the old capture would otherwise land
+            // in the gap and be read as the new one having delivered.
+            // Retiring clears the arrival record too, so the old capture's
+            // last buffer cannot be read as the new one having delivered.
+            channel.gate.retire()
+            previous?.stop()
+
+            do {
+                let capture = try makeCapture(for: channel, resuming: true)
+                try await Task.detached { try capture.start() }.value
+                // The session can have ended while the start was in progress,
+                // and teardown only stops the captures it can see. One attached
+                // now would run on with nothing watching it — a microphone left
+                // live under an idle window.
+                guard stillWanted(channel) else {
+                    capture.stop()
+                    debugLog("\(kind.rawValue) capture rebuilt into a session that had ended; discarded")
+                    return
+                }
+                channel.capture = capture
+                channel.captureStartedAt = SuspendingClock.now
+            } catch {
+                debugLog("\(kind.rawValue) capture rebuild \(attempt + 1) failed to start: \(error)")
+                continue
+            }
+
+            // Started is not the same as working; what settles that is asked
+            // of the capture itself.
+            if await waitForCapture(channel) {
+                guard stillWanted(channel) else { return }
+                channel.provedAt = SuspendingClock.now
+                debugLog("\(kind.rawValue) capture rebuilt on attempt \(attempt + 1)")
+                AppState.shared.notice = PanelNotice(
+                    kind: .info, message: LF("notice.captureRecovered", captureName(kind)))
+                return
+            }
+            debugLog("\(kind.rawValue) capture rebuild \(attempt + 1) delivered nothing")
+        }
+
+        guard stillWanted(channel) else { return }
+        debugLog("\(kind.rawValue) capture could not be rebuilt; stopping")
+        // Posted before the stop, not after: teardown takes a moment, and the
+        // defer above clears the reconnecting notice on the way out — between
+        // the two the panel would sit there explaining nothing.
+        AppState.shared.notice = PanelNotice(
+            kind: .warning, message: LF("notice.captureStopped", captureName(kind)))
+        // From a separate task, and it has to be: teardown waits for this one,
+        // so awaiting the stop from inside it would have each waiting on the
+        // other. The same reason the auto-stop watch hands its stop off.
+        Task { @MainActor in
+            await Engine.shared.stop()
+        }
+    }
+
+    /// Whether a freshly started capture has shown itself to be working,
+    /// within the startup grace.
+    private func waitForCapture(_ channel: Channel) async -> Bool {
+        guard let started = channel.captureStartedAt else { return false }
+        while started.duration(to: SuspendingClock.now) < Self.captureStartGrace {
+            // Cancellation is checked first, and has to be: a buffer that
+            // arrived just before a stop would otherwise be read as proof of a
+            // successful rebuild, and the panel would announce a recovery over
+            // a session teardown was already dismantling.
+            guard stillWanted(channel) else { return false }
+            if captureProvedItself(channel) { return true }
+            try? await Task.sleep(for: .milliseconds(200))
+        }
+        guard stillWanted(channel) else { return false }
+        return captureProvedItself(channel)
+    }
+
+    /// A buffer settles it for either kind. Without one, a system tap can still
+    /// prove itself by having a live device: it delivers only while something
+    /// is playing, so demanding a buffer would fail every rebuild performed in
+    /// a quiet moment — and then stop the session for it.
+    private func captureProvedItself(_ channel: Channel) -> Bool {
+        if channel.gate.lastArrivalAt != nil { return true }
+        guard channel.kind == .system, let capture = channel.capture else { return false }
+        return capture.isAlive
+    }
+
+    /// Whether a rebuild still has anything to rebuild for: the task has not
+    /// been cancelled, the session is still going, and this channel still
+    /// belongs to it.
+    private func stillWanted(_ channel: Channel) -> Bool {
+        !Task.isCancelled
+            && sessionAcceptsRecovery
+            && channels.contains { $0 === channel }
+    }
+
+    /// Whether the session is in a state where rebuilding a capture still makes
+    /// sense.
+    ///
+    /// Not simply "running": the phase stays .running until teardown has
+    /// finished, so a stop in progress reads as a healthy session. A device
+    /// invalidation arriving in that window would start a rebuild teardown has
+    /// already gone past waiting for, and hand a live capture to a session that
+    /// is on its way out.
+    private var sessionAcceptsRecovery: Bool {
+        AppState.shared.phase == .running && stopTask == nil
+    }
+
+    fileprivate func captureName(_ kind: ChannelKind) -> String {
+        kind == .system ? L("source.system") : L("source.mic")
+    }
+
+    /// Builds a capture for a channel, wiring it to the analyzer through a feed
+    /// carrying its own generation. Used for the channel's first capture and
+    /// for every replacement, so that a rebuild differs from a fresh start in
+    /// exactly one way: the first buffer states where in the timeline it goes.
+    private func makeCapture(for channel: Channel, resuming: Bool) throws -> any AudioCaptureSource {
+        guard let format = channel.format, let inputCont = channel.inputContinuation else {
+            throw KikiyakuError.converterUnavailable
+        }
+        let feed = CaptureFeed(
+            epoch: channel.epoch,
+            gate: channel.gate,
+            generation: channel.gate.nextGeneration(),
+            continuation: inputCont,
+            resuming: resuming
+        )
+        if channel.kind == .system {
+            let systemSource = SystemAudioSource(analyzerFormat: format) { buffer, hostTime in
+                feed.accept(buffer, hostTime: hostTime)
+            }
+            // The aggregate goes silently dead when the default output device
+            // changes. Rebuilding is worth a try before the session is given
+            // up on — the same route the watchdog takes, and for the same
+            // reason: the recognizer, the history and the translator's memory
+            // of the conversation all survive a capture being replaced.
+            systemSource.onDeviceInvalidated = { [weak channel] in
+                Task { @MainActor in
+                    guard let channel else { return }
+                    debugLog("system capture reported its device invalid")
+                    Engine.shared.noteDeviceInvalidated(channel)
+                }
+            }
+            return systemSource
+        }
+        return try MicSource(analyzerFormat: format) { buffer, hostTime in
+            feed.accept(buffer, hostTime: hostTime)
+        }
+    }
+
     /// Multi-channel teardown, run as a phase barrier: each phase completes on
     /// every channel before the next begins.
     private func teardown() async {
@@ -939,6 +1275,22 @@ final class Engine {
         captureWatchTask?.cancel()
         captureWatchTask = nil
         AudioDeviceWatch.stop()
+        // Rebuilds are cancelled and waited for before anything is stopped. One
+        // still in flight would go on to start a capture after teardown had
+        // been past it, and attach it to a session that no longer exists.
+        for channel in channels {
+            channel.recoveryTask?.cancel()
+        }
+        for channel in channels {
+            await channel.recoveryTask?.value
+            channel.recoveryTask = nil
+            channel.recovering = false
+        }
+        // Nothing more may be heard from any capture, whichever generation it
+        // belongs to, before the stops below.
+        for channel in channels {
+            channel.gate.retire()
+        }
         // Release drains parked on the start gate (failure path — a no-op
         // after a successful start, which opened the gate). Left parked, the
         // drain awaits below would never return.
@@ -1038,6 +1390,7 @@ final class Engine {
         epoch: EpochBox,
         clock: SessionClock,
         tracker: SentenceTracker?,
+        trackerReset: TrackerResetFlag,
         bidirectional: Bool,
         gate: StartGate,
         failures: StreamFailureBox
@@ -1053,6 +1406,19 @@ final class Engine {
                     if !sessionConfirmed {
                         guard await gate.wait() else { return }
                         sessionConfirmed = true
+                    }
+                    // A rebuild ended whatever utterance the tracker was
+                    // measuring; start over before this result is judged
+                    // against it. Done here so that every touch of the
+                    // tracker's state happens on this one task.
+                    //
+                    // The tracker comes first, and has to: every channel's
+                    // drain shares this flag, but only one of them owns a
+                    // tracker. Taking it from a drain with nothing to reset
+                    // would swallow the request whole, and the drain it was
+                    // meant for would never hear of it.
+                    if let tracker, trackerReset.take() {
+                        tracker.reset()
                     }
                     let text = String(result.text.characters)
                         .trimmingCharacters(in: .whitespacesAndNewlines)

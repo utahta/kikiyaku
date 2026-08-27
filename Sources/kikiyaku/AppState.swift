@@ -95,6 +95,21 @@ struct LiveText: Sendable {
     var audioEnd: TimeInterval
 }
 
+/// A message shown over the transcript. Identifiable so the panel animates one
+/// replacing another rather than editing the text in place.
+struct PanelNotice: Identifiable, Equatable, Sendable {
+    enum Kind: Sendable {
+        /// Something went wrong and the session is not doing what was asked.
+        case warning
+        /// Something worth knowing that resolved itself.
+        case info
+    }
+
+    let id = UUID()
+    let kind: Kind
+    let message: String
+}
+
 @MainActor
 @Observable
 final class AppState {
@@ -150,6 +165,13 @@ final class AppState {
     /// disables itself after consecutive failures. Read by the UI (pending "…"
     /// display) and by the confidence-skip judgment in the drain.
     var translationReady = false
+    /// A message the reader has to actually read — why a session stopped
+    /// itself, most of all. The status line cannot carry one: it is half a
+    /// panel wide with the button beside it, so anything longer than a phrase
+    /// is truncated, and a truncated explanation of a stopped session is no
+    /// explanation. Shown as a banner over the transcript until dismissed, or
+    /// until the next session starts.
+    var notice: PanelNotice?
     /// Font size of translations. Mirrors Preferences; applies to the panel immediately.
     var fontSize = Preferences.fontSize
     /// Font size of the recognized source text. Mirrors Preferences; immediate.

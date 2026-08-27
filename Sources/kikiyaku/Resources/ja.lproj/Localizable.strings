@@ -21,6 +21,7 @@
 "panel.translating" = "翻訳中";
 "panel.recognizing" = "認識中";
 "panel.provisionalKept" = "暫定訳（確定訳の取得に失敗）";
+"panel.dismissNotice" = "閉じる";
 
 /* Status */
 "status.idle" = "待機中";
@@ -40,13 +41,17 @@
 "status.stopSaveFailed" = "停止（保存に失敗: %@。履歴は保持しています）";
 "status.autoStopSuffix" = "（無音%d分で自動停止）";
 "status.outputDeviceChangedSuffix" = "（出力デバイスの変更により自動停止。もう一度開始してください）";
-"status.captureStalledSuffix" = "（音声が途切れたため自動停止しました。オーディオ機器の接続が変わった可能性があります。もう一度開始してください）";
 "source.mic" = "マイク";
 "source.system" = "システム音声";
 "source.both" = "マイク＋システム音声";
 "status.recognitionErrorSuffix" = "（認識エラーで自動停止: %@）";
 "status.missingConfidenceSuffix" = " — 認識結果に信頼度が付かないため話者の言語を判定できず、発話を破棄しています。単方向のモードに切り替えてください。";
 "status.llmStoppedNone" = "%@ 翻訳を停止（連続失敗）。このセッションは翻訳なしで継続";
+
+/* Panel notices */
+"notice.captureRecovering" = "%@ が途切れました。接続し直しています…";
+"notice.captureRecovered" = "%@ の接続を回復しました。途切れていた間の音声は取得できていません。";
+"notice.captureStopped" = "%@ が途切れたため停止しました。オーディオ機器の接続が変わった可能性があります。もう一度開始してください。";
 
 /* Translations */
 "translation.failed" = "[翻訳失敗]";
@@ -57,6 +62,7 @@
 "error.micDenied" = "マイクの使用が許可されていません";
 "error.speechDenied" = "音声認識の使用が許可されていません（システム設定 > プライバシーとセキュリティ > 音声認識 で許可してください）";
 "error.languageUnsupported" = "音声認識が %@ に対応していません（設定で対応言語を選んでください）";
+"error.captureLostDeviceDuringStart" = "開始の途中で%@のオーディオ機器の構成が変わりました。もう一度開始してください。";
 
 /* Settings */
 "settings.help" = "説明";

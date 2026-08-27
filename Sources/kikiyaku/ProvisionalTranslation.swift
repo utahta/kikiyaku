@@ -72,6 +72,33 @@ final class ProvisionalWorkBox: @unchecked Sendable {
 /// closed (the time cut is not a grammatical cut).
 ///
 /// @unchecked Sendable: only ever touched from the drain task.
+/// Requests that a tracker be reset by whoever owns it.
+///
+/// A capture being rebuilt ends the utterance the tracker was measuring, but
+/// the rebuild runs on the MainActor while the tracker belongs to a detached
+/// drain — reaching in from there would race update(). The engine raises the
+/// flag instead, and the drain clears it at the top of its next result, on the
+/// one thread that ever touches the tracker's state.
+final class TrackerResetFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var raised = false
+
+    func raise() {
+        lock.lock()
+        raised = true
+        lock.unlock()
+    }
+
+    /// Returns whether a reset was pending, and clears it.
+    func take() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let value = raised
+        raised = false
+        return value
+    }
+}
+
 final class SentenceTracker: @unchecked Sendable {
     enum Trigger {
         /// The closed prefix grew or one of its sentences was revised

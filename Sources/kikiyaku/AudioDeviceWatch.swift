@@ -19,17 +19,22 @@ enum AudioDeviceWatch {
     static func start() {
         guard debugLoggingEnabled, listener == nil else { return }
         previous = census()
-        debugLog("audio devices at start: %@", describe(previous))
+        debugLog("audio devices at start: \(describe(previous))")
 
         var address = devicesAddress()
         // Registered against the main queue, so the state above is reached
         // from the actor that owns it.
         let block: AudioObjectPropertyListenerBlock = { _, _ in
             MainActor.assumeIsolated {
+                // Removing a listener does not recall the calls already on the
+                // queue, and one arriving after the watch was stopped would
+                // compare against a census that has been cleared — reporting
+                // the machine as having gone from no devices to several.
+                guard listener != nil else { return }
                 let now = census()
                 defer { previous = now }
                 guard now != previous else { return }
-                debugLog("audio devices changed: %@ -> %@", describe(previous), describe(now))
+                debugLog("audio devices changed: \(describe(previous)) -> \(describe(now))")
             }
         }
         listener = block

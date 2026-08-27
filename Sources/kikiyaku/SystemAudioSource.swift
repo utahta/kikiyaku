@@ -22,7 +22,7 @@ struct CoreAudioError: Error, CustomStringConvertible {
 /// output on Macs without one.
 final class SystemAudioSource: AudioCaptureSource, @unchecked Sendable {
     private let analyzerFormat: AVAudioFormat
-    private let onChunk: @Sendable (AnalyzerInput, UInt64) -> Void
+    private let onChunk: @Sendable (AVAudioPCMBuffer, UInt64) -> Void
     /// Called once when the default output device changes. The aggregate stays
     /// anchored to the device it was built on and goes silently dead, so the
     /// engine should stop the session instead of appearing to run while
@@ -34,11 +34,17 @@ final class SystemAudioSource: AudioCaptureSource, @unchecked Sendable {
     private var ioProcID: AudioDeviceIOProcID?
     private var deviceListenerBlock: AudioObjectPropertyListenerBlock?
     private var deviceLostFired = false
+    /// Whether the aggregate rides the built-in output (stable, always there)
+    /// or, on a Mac without one, whatever the default output was at the time.
+    private var anchoredToBuiltIn = true
+    /// UID of the device the aggregate was built around. Only meaningful in
+    /// the fallback case, where the anchor can be taken away.
+    private var anchorUID: String?
     // Runs the IOProc off Core Audio's real-time IO thread; converting and
     // calling back are not safe there.
     private let ioQueue = DispatchQueue(label: "kikiyaku.system-audio")
 
-    init(analyzerFormat: AVAudioFormat, onChunk: @escaping @Sendable (AnalyzerInput, UInt64) -> Void) {
+    init(analyzerFormat: AVAudioFormat, onChunk: @escaping @Sendable (AVAudioPCMBuffer, UInt64) -> Void) {
         self.analyzerFormat = analyzerFormat
         self.onChunk = onChunk
     }
@@ -92,6 +98,8 @@ final class SystemAudioSource: AudioCaptureSource, @unchecked Sendable {
             outputUID = try Self.defaultOutputDeviceUID()
             anchoredToBuiltIn = false
         }
+        self.anchoredToBuiltIn = anchoredToBuiltIn
+        self.anchorUID = outputUID
         let description: [String: Any] = [
             kAudioAggregateDeviceNameKey: "kikiyaku-system-tap",
             kAudioAggregateDeviceUIDKey: UUID().uuidString,
@@ -99,11 +107,19 @@ final class SystemAudioSource: AudioCaptureSource, @unchecked Sendable {
             kAudioAggregateDeviceIsPrivateKey: true,
             kAudioAggregateDeviceIsStackedKey: false,
             // Per the SDK header, with this key AudioDeviceStart waits until a
-            // tapped process receives its first audio. In practice the global
-            // tap satisfies that immediately even when nothing audible is
-            // playing (measured: start returns within the same second and the
-            // IOProc delivers silent buffers at full rate), so start() does not
-            // stall while waiting for playback. Requires the private key.
+            // tapped process receives its first audio. It returns promptly all
+            // the same — measured within the same second on a quiet machine —
+            // so start() does not stall waiting for playback. Requires the
+            // private key.
+            //
+            // What it does NOT mean is that buffers then keep coming. The tap
+            // delivers while something is playing and stops when nothing is:
+            // starting a session on a silent machine yields no buffer at all
+            // until something plays, and buffers cease again when it stops.
+            // An earlier note here claimed silent buffers arrive at full rate,
+            // and a watchdog built on that reading stopped healthy sessions
+            // for the offence of nobody speaking. Anything asking "is this
+            // capture alive?" has to ask the device, not the buffer flow.
             kAudioAggregateDeviceTapAutoStartKey: true,
             kAudioAggregateDeviceSubDeviceListKey: [
                 [kAudioSubDeviceUIDKey: outputUID]
@@ -138,7 +154,7 @@ final class SystemAudioSource: AudioCaptureSource, @unchecked Sendable {
             let input = inInputTime.pointee
             let hostTime = input.mFlags.contains(.hostTimeValid)
                 ? input.mHostTime : inNow.pointee.mHostTime
-            onChunk(AnalyzerInput(buffer: converted), hostTime)
+            onChunk(converted, hostTime)
         }
         guard status == noErr, let procID else { throw CoreAudioError(code: status, op: "CreateIOProc") }
         ioProcID = procID
@@ -151,6 +167,15 @@ final class SystemAudioSource: AudioCaptureSource, @unchecked Sendable {
         // (aggregate following the default output).
         if !anchoredToBuiltIn {
             startDeviceListener()
+            // The default output is read again now the listener is in place.
+            // Reading it, building the aggregate and subscribing are three
+            // separate moments, and a change falling between the first and the
+            // third is announced to nobody — leaving an aggregate anchored to a
+            // device that is no longer the one in use, which delivers nothing
+            // and answers every question about itself as healthy.
+            if let current = try? Self.defaultOutputDeviceUID(), current != outputUID {
+                throw KikiyakuError.captureLostDeviceDuringStart(L("source.system"))
+            }
         }
     }
 
@@ -169,6 +194,66 @@ final class SystemAudioSource: AudioCaptureSource, @unchecked Sendable {
             AudioHardwareDestroyProcessTap(tapID)
             tapID = AudioObjectID(kAudioObjectUnknown)
         }
+    }
+
+    /// Whether the private aggregate device still exists.
+    ///
+    /// Asked of Core Audio rather than inferred from buffer arrivals: the tap
+    /// falls silent whenever nothing is playing, and a session must not be
+    /// torn down for a quiet room.
+    ///
+    /// Existence, not activity. kAudioDevicePropertyDeviceIsRunning answers
+    /// whether the IOProc is currently running, and with the tap set to start
+    /// itself when a tapped process first plays something, that is 0 for as
+    /// long as the machine is quiet — which would condemn a perfectly healthy
+    /// capture within seconds of starting one.
+    var isAlive: Bool {
+        // Read without synchronisation, as the rest of this type is: start and
+        // stop never overlap (see AudioCaptureSource), and this is only ever
+        // asked of a capture the engine has already attached.
+        let device = aggregateID
+        guard device != AudioObjectID(kAudioObjectUnknown) else { return false }
+        // Once the anchor has been reported gone it stays gone. The aggregate
+        // outlives it and goes on answering, so without latching, a capture
+        // that has already lost its clock would read as healthy again.
+        guard !deviceLostFired else { return false }
+
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceIsAlive,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var alive: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(device, &address, 0, nil, &size, &alive)
+        // An error here means the device is no longer answering — it was
+        // destroyed under us, which is the failure this is looking for.
+        guard status == noErr else {
+            debugLog("aggregate device \(device) will not answer (status \(status))")
+            return false
+        }
+        if alive == 0 {
+            debugLog("aggregate device \(device) reports itself not alive")
+            return false
+        }
+
+        // Existing is not the same as still being connected to the right
+        // device. Anchored to the built-in output there is nothing to check —
+        // it does not go anywhere. In the fallback case the anchor is whatever
+        // the default output happened to be, and when that changes the
+        // aggregate keeps its old sub-device: alive, answering, and delivering
+        // nothing at all.
+        if !anchoredToBuiltIn, let anchorUID {
+            guard let current = try? Self.defaultOutputDeviceUID() else {
+                debugLog("default output will not answer; treating the anchor as gone")
+                return false
+            }
+            guard current == anchorUID else {
+                debugLog("default output moved away from the aggregate's anchor")
+                return false
+            }
+        }
+        return true
     }
 
     // MARK: - Default-output change watch

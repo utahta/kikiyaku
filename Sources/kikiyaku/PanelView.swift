@@ -43,11 +43,27 @@ struct PanelView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if let language = panelLanguage {
-                BilingualContent(state: state, language: language)
-            } else {
-                HistoryContent(state: state)
+            Group {
+                if let language = panelLanguage {
+                    BilingualContent(state: state, language: language)
+                } else {
+                    HistoryContent(state: state)
+                }
             }
+            .overlay(alignment: .top) {
+                // Over the transcript rather than in the footer: the status
+                // line is half a panel wide with the button beside it, and an
+                // explanation of why a session stopped is exactly the thing
+                // that must not be truncated. Only the primary panel carries
+                // it — the same reason the footer's controls live there.
+                if role == .primary, let notice = state.notice {
+                    NoticeBanner(notice: notice) { state.notice = nil }
+                        .padding(.horizontal, 12)
+                        .padding(.top, 10)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.easeOut(duration: 0.2), value: state.notice)
             Divider()
             footer
                 .padding(8)
@@ -958,5 +974,55 @@ private struct UtteranceRow: View {
                 SkeletonLine(fontSize: fontSize)
             }
         }
+    }
+}
+
+/// A message shown over the transcript until it is dismissed. Deliberately
+/// wraps: the reason a session stopped is usually a sentence, and the whole
+/// point of moving it off the status line was to stop cutting it in half.
+private struct NoticeBanner: View {
+    let notice: PanelNotice
+    let onDismiss: () -> Void
+
+    private var tint: Color {
+        switch notice.kind {
+        case .warning: .orange
+        case .info: .secondary
+        }
+    }
+
+    private var symbol: String {
+        switch notice.kind {
+        case .warning: "exclamationmark.triangle.fill"
+        case .info: "info.circle.fill"
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: symbol)
+                .foregroundStyle(tint)
+            Text(notice.message)
+                .font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Button {
+                onDismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(L("panel.dismissNotice"))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(tint.opacity(0.35), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
     }
 }
