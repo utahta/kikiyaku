@@ -4,6 +4,10 @@ Kikiyaku is a macOS menu bar app for live transcription and translation. It list
 
 Transcription appears as people speak, and the translation follows about a second later. Rather than a dedicated translation engine, the transcript goes to an LLM — local or in the cloud — so the translation can draw on the conversation so far: it recovers words the recognizer got wrong, resolves phrases that are ambiguous on their own, and keeps terminology consistent throughout.
 
+https://github.com/user-attachments/assets/38354c67-776a-458b-8b22-b666bfda33ed
+
+Translating a public-domain recording of *Alice's Adventures in Wonderland* — read by a LibriVox volunteer — from system audio, with a 26B model running locally through Ollama.
+
 ## What it's for
 
 Anything spoken that your Mac can play, or that a microphone can hear.
