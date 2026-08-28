@@ -52,13 +52,21 @@ Transcription-only use needs no backend at all.
 
 ## Install
 
-Download `Kikiyaku_v*_macos_arm64.zip` from the [releases page](https://github.com/utahta/kikiyaku/releases), unzip it, and move `Kikiyaku.app` to your Applications folder. Then clear the quarantine flag once:
+With [Homebrew](https://brew.sh/):
+
+```sh
+brew install --cask utahta/tap/kikiyaku
+```
+
+`brew upgrade` picks up later releases from the same tap.
+
+Or download `Kikiyaku_v*_macos_arm64.zip` from the [releases page](https://github.com/utahta/kikiyaku/releases), unzip it, move `Kikiyaku.app` to your Applications folder, and clear the quarantine flag once:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/Kikiyaku.app
 ```
 
-Kikiyaku is not notarized by Apple, so macOS quarantines the download and refuses to open it — usually with a message claiming the app is damaged. Nothing is damaged; macOS simply cannot check a signature Apple never issued, and since macOS 15 there is no longer a right-click-to-open way around it. The command above is you saying you trust this app anyway, so run it only for a copy you got from the releases page above. [Building it yourself](#building-from-source) avoids the question entirely.
+Kikiyaku is not notarized by Apple, so macOS quarantines the download and refuses to open it — usually with a message claiming the app is damaged. Nothing is damaged; macOS simply cannot check a signature Apple never issued, and since macOS 15 there is no longer a right-click-to-open way around it. The command above is you saying you trust this app anyway, so run it only for a copy you got from the releases page above. The cask runs it for you, which is the one thing installing through Homebrew saves you. [Building it yourself](#building-from-source) avoids the question entirely.
 
 The app is signed ad hoc, which means its signature changes with every release. macOS ties permissions to that signature, so the microphone and speech recognition prompts come back after each update.
 
