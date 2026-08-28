@@ -937,7 +937,7 @@ struct ProfileEditorContext: Identifiable {
 }
 
 /// Modal editor for one backend profile. Owns its own draft state so nothing
-/// touches the saved profiles (or the live settings) until 保存.
+/// touches the saved profiles (or the live settings) until Save is pressed.
 private struct ProfileEditorSheet: View {
     @State private var draft: BackendProfile
     private let isNew: Bool
