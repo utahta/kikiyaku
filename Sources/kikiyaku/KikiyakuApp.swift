@@ -345,37 +345,78 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         let p = buildPanel(role: .secondary)
         // First appearance (no saved frame yet — or a saved frame no display
         // covers anymore): sit beside the main panel so the two do not stack
-        // on the same spot. Placed blindly at "left of main", a main panel
-        // near the screen edge would push this one fully off-screen, which
-        // reads as "bidirectional mode only made one panel" — so prefer the
-        // left, fall back to the right, and clamp into the screen's visible
-        // frame (which also avoids the Dock and menu bar) as the last
-        // resort. The autosave takes over from then on.
+        // on the same spot. The same placement the Arrange command makes,
+        // for the same reason it exists: two default-width panels and their
+        // gap are wider than a 1280-point display, and merely clamping this
+        // one into the screen would drop it straight onto the main panel —
+        // which reads as "bidirectional mode only made one panel". Placing
+        // the pair together shrinks both to fit when they must. The side is
+        // whichever has more room beside the main panel; the autosave takes
+        // over from then on.
         let restored = p.setFrameUsingName("kikiyaku.panel2")
         let onSomeScreen = NSScreen.screens.contains { $0.visibleFrame.intersects(p.frame) }
-        if !restored || !onSomeScreen, let main = panel {
-            let gap: CGFloat = 12
-            var origin = NSPoint(x: main.frame.minX - p.frame.width - gap, y: main.frame.minY)
-            if let visible = (main.screen ?? NSScreen.main)?.visibleFrame {
-                if origin.x < visible.minX {
-                    let rightX = main.frame.maxX + gap
-                    origin.x = rightX + p.frame.width <= visible.maxX
-                        ? rightX
-                        : max(visible.minX, min(origin.x, visible.maxX - p.frame.width))
-                }
-                origin.y = max(visible.minY, min(origin.y, visible.maxY - p.frame.height))
-            }
-            p.setFrameOrigin(origin)
+        if !restored || !onSomeScreen, let main = panel,
+           let visible = (main.screen ?? NSScreen.main)?.visibleFrame {
+            let roomLeft = main.frame.minX - visible.minX
+            let roomRight = visible.maxX - main.frame.maxX
+            placePair(main: main, second: p, secondOnRight: roomRight > roomLeft)
         }
         p.setFrameAutosaveName("kikiyaku.panel2")
         panel2 = p
     }
 
+    /// Puts the two panels side by side, `snapGap` apart, tops level and the
+    /// same height, and on screen. The pair moves as one: placing the second
+    /// panel around a main panel that stays put fails whenever the main one
+    /// sits too near the middle for either side to have room — even when the
+    /// two would fit side by side perfectly well a little to the left or
+    /// right. When they are wider than the screen however they are placed,
+    /// each gets half of what there is, down to the panel's own minimum,
+    /// rather than the two overlapping.
+    private static func placePair(main: NSPanel, second: NSPanel, secondOnRight: Bool) {
+        guard let visible = (main.screen ?? NSScreen.main)?.visibleFrame else { return }
+        let gap = snapGap
+        let mainFrame = main.frame
+        let secondFrame = second.frame
+
+        var mainWidth = mainFrame.width
+        var secondWidth = secondFrame.width
+        if mainWidth + gap + secondWidth > visible.width {
+            let half = max(300, (visible.width - gap) / 2)
+            mainWidth = half
+            secondWidth = half
+        }
+        let groupWidth = mainWidth + gap + secondWidth
+
+        // Start from where the main panel already is, then slide the pair as a
+        // whole until it is on screen.
+        var groupX = secondOnRight ? mainFrame.minX : mainFrame.minX - secondWidth - gap
+        groupX = min(max(groupX, visible.minX), visible.maxX - groupWidth)
+
+        let height = min(mainFrame.height, visible.height)
+        let y = min(max(mainFrame.minY, visible.minY), visible.maxY - height)
+
+        let mainX = secondOnRight ? groupX : groupX + secondWidth + gap
+        let secondX = secondOnRight ? groupX + mainWidth + gap : groupX
+
+        isSnapping = true
+        main.setFrame(NSRect(x: mainX, y: y, width: mainWidth, height: height), display: true)
+        second.setFrame(NSRect(x: secondX, y: y, width: secondWidth, height: height), display: true)
+        isSnapping = false
+    }
+
     private static func buildPanel(role: PanelRole) -> NSPanel {
         // .nonactivatingPanel: scrolling and other interactions never steal focus
         // from the meeting app.
+        //
+        // Wide and short, like a subtitle strip: at the default 20pt a
+        // translated sentence fits in one or two lines at this width, where a
+        // narrow panel folded it into three and sent the eye back to the
+        // margin each time. Only the first launch sees this — the frame is
+        // autosaved from then on, so anyone who wants a tall transcript
+        // column drags it once.
         let p = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 380, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 360),
             styleMask: [.titled, .closable, .resizable, .utilityWindow, .nonactivatingPanel, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -519,48 +560,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     @objc private func arrangePanels() {
         Self.showPanel()
         guard let main = Self.panel, let second = Self.panel2, second.isVisible else { return }
-        guard let visible = (main.screen ?? NSScreen.main)?.visibleFrame else { return }
-
-        let gap = Self.snapGap
-        let mainFrame = main.frame
-        let secondFrame = second.frame
         // Keep whichever side the second panel is already on; only its first
         // appearance picks a side for it.
-        let secondOnRight = secondFrame.midX > mainFrame.midX
-
-        // The pair moves as one. Placing the second panel around a main panel
-        // that stays put fails whenever the main one sits too near the middle
-        // for either side to have room — even when the two would fit side by
-        // side perfectly well a little to the left or right.
-        var mainWidth = mainFrame.width
-        var secondWidth = secondFrame.width
-        if mainWidth + gap + secondWidth > visible.width {
-            // Wider than the screen however they are placed: give each half of
-            // what there is, down to the panel's own minimum, rather than
-            // leaving the command with nothing to do but overlap them.
-            let half = max(300, (visible.width - gap) / 2)
-            mainWidth = half
-            secondWidth = half
-        }
-        let groupWidth = mainWidth + gap + secondWidth
-
-        // Start from where the main panel already is, then slide the pair as a
-        // whole until it is on screen.
-        var groupX = secondOnRight ? mainFrame.minX : mainFrame.minX - secondWidth - gap
-        groupX = min(max(groupX, visible.minX), visible.maxX - groupWidth)
-
-        let height = min(mainFrame.height, visible.height)
-        let y = min(max(mainFrame.minY, visible.minY), visible.maxY - height)
-
-        let mainX = secondOnRight ? groupX : groupX + secondWidth + gap
-        let secondX = secondOnRight ? groupX + mainWidth + gap : groupX
-
-        Self.isSnapping = true
-        main.setFrame(
-            NSRect(x: mainX, y: y, width: mainWidth, height: height), display: true)
-        second.setFrame(
-            NSRect(x: secondX, y: y, width: secondWidth, height: height), display: true)
-        Self.isSnapping = false
+        Self.placePair(main: main, second: second, secondOnRight: second.frame.midX > main.frame.midX)
     }
 
     /// Re-syncs the panel layout (one classic panel vs. two language panels)
