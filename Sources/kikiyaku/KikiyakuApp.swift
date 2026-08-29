@@ -26,13 +26,22 @@ struct KikiyakuApp: App {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, NSMenuDelegate {
     static private(set) var panel: NSPanel?
 
     private var statusItem: NSStatusItem?
     private let menu = NSMenu()
+    private let profileMenu = NSMenu()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // The profile store first: its initializer settles the mirror keys
+        // (migration, a selection that no longer exists, an edit made through
+        // `defaults write`) that the panel layout below is built from. The
+        // recognizer's locale list is what tells an unsupported profile from a
+        // supported one; until it arrives, no profile is refused on language.
+        let store = SessionProfileStore.shared
+        Task { await store.loadCapabilities() }
+
         // Regular activation policy (Dock icon + Cmd+Tab switcher), so the
         // hidden panel can be brought back from the keyboard. The menu bar
         // status item remains the primary control surface.
@@ -73,6 +82,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
     /// Any activation (Cmd+Tab included): the panel is the app's face, so
     /// re-show it when the user switches to kikiyaku.
     func applicationDidBecomeActive(_ notification: Notification) {
+        // Coming back from a Terminal where `defaults write` may have run.
+        // The settings window, if open, is re-shown by AppKit rather than by
+        // showSettings, so read the edit into the selected profile here, and
+        // the store and the read-only settings display show it. An editor
+        // sheet already open keeps its draft: saving that draft deliberately
+        // wins over the imported values. Not conditioned on the window: the
+        // read-back is cheap and correct either way, and the window's
+        // visibility is mid-change right here.
+        SessionProfileStore.shared.importMirrorIntoSelected()
         Self.showPanel()
         // hidesOnDeactivate re-shows an open settings window on activation, but
         // the panel front-ordering above would then cover it (both windows are
@@ -110,6 +128,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
         menu.addItem(.separator())
 
+        // Filled in each time the menu opens (menuWillOpen): the profiles, the
+        // checkmark and each entry's availability all change between opens.
+        // Enabling is decided there too, not by validation.
+        let profiles = NSMenuItem(title: L("menu.profiles"), action: nil, keyEquivalent: "")
+        profileMenu.autoenablesItems = false
+        profiles.submenu = profileMenu
+        menu.addItem(profiles)
+
         let settings = NSMenuItem(title: L("menu.settings"), action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
@@ -120,8 +146,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         quit.target = self
         menu.addItem(quit)
 
+        menu.delegate = self
         item.menu = menu
         statusItem = item
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        guard menu === self.menu else { return }
+        rebuildProfileMenu()
+    }
+
+    /// The profile submenu, built fresh: one entry per profile, the selected
+    /// one checked, and each of the others enabled only if switching to it
+    /// would go through — with the reason in the tooltip when it would not.
+    /// Unlike the settings screen, an unsupported profile is refused here as
+    /// well: the menu has no way to show what is wrong with it, let alone fix
+    /// it.
+    private func rebuildProfileMenu() {
+        let store = SessionProfileStore.shared
+        // A `defaults write` since the last look belongs to the selected
+        // profile. Taken in now, before a switch writes over it — and before
+        // the availability of the other profiles is judged against it.
+        store.importMirrorIntoSelected()
+        profileMenu.removeAllItems()
+        let running = AppState.shared.phase != .idle
+        for profile in store.profiles {
+            let item = NSMenuItem(title: profile.name, action: #selector(selectProfile(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = profile.id
+            item.state = profile.id == store.selectedID ? .on : .off
+            if profile.id == store.selectedID {
+                // The name stays readable while running; only the switch is off.
+                item.isEnabled = !running
+            } else if let reason = store.switchability(of: profile.id).reason {
+                item.isEnabled = false
+                item.toolTip = reason.message
+            }
+            profileMenu.addItem(item)
+        }
+    }
+
+    @objc private func selectProfile(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? UUID else { return }
+        do {
+            try SessionProfileStore.shared.select(id)
+        } catch {
+            // The entry was enabled on the strength of a check made when the
+            // menu opened; a session could have started since.
+            let alert = NSAlert()
+            alert.messageText = L("profiles.error.title")
+            alert.informativeText = error.message
+            alert.runModal()
+        }
     }
 
     @objc private func showPanelAction() {
@@ -171,6 +247,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
 
     private static func showSettings() {
         NSApp.activate(ignoringOtherApps: true)
+        // The window is kept and reused, so the view's own appearance hooks
+        // fire once; this is the moment to notice a `defaults write` made
+        // since the last look, so the fields show it rather than write over it.
+        SessionProfileStore.shared.importMirrorIntoSelected()
         if let window = settingsWindow {
             window.makeKeyAndOrderFront(nil)
             return
@@ -184,7 +264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation {
         hosting.sizingOptions = []
         hosting.safeAreaRegions = []
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 560, height: 640),
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 640),
             styleMask: [.titled, .closable, .resizable],
             backing: .buffered,
             defer: false

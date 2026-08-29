@@ -12,7 +12,7 @@ struct LanguageOption: Identifiable, Sendable {
 /// `defaults write`, but the app itself only ever reads and writes the pair
 /// through this type — a half-updated combination the menu never offers
 /// cannot be observed.
-enum SessionMode: String, Sendable, CaseIterable, Identifiable {
+enum SessionMode: String, Codable, Hashable, Sendable, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     /// Language 1 is recognized and translated into language 2.
@@ -31,9 +31,10 @@ enum SessionMode: String, Sendable, CaseIterable, Identifiable {
     var isBidirectional: Bool { self == .bidirectional || self == .bilingual }
 }
 
-/// A named snapshot of the translation-backend configuration, e.g.
-/// "local qwen" (LM Studio) vs "OpenAI cloud". Keys are deliberately not
-/// included: they live in the Keychain per endpoint and follow automatically.
+/// The profile record of versions before session profiles: a named snapshot
+/// of the backend configuration alone. Read once, by the migration that turns
+/// each into a SessionProfile, and never written again. Keys were never part
+/// of it either — they live in the Keychain per endpoint.
 struct BackendProfile: Codable, Identifiable, Hashable, Sendable {
     var name: String
     var backend: String
@@ -191,20 +192,15 @@ enum Preferences {
 
     private static let profilesKey = "backendProfiles"
 
-    /// Saved backend configurations, switchable from the settings screen.
-    /// API keys are not part of a profile — they are stored per endpoint in
-    /// the Keychain and follow the endpoint automatically.
+    /// The backend-only profiles of earlier versions, kept for the migration
+    /// into session profiles (SessionProfileStore). The key is left in place
+    /// after migrating, so a downgrade still finds them.
     static var backendProfiles: [BackendProfile] {
-        get {
-            guard let data = UserDefaults.standard.data(forKey: profilesKey),
-                  let profiles = try? JSONDecoder().decode([BackendProfile].self, from: data) else {
-                return []
-            }
-            return profiles
+        guard let data = UserDefaults.standard.data(forKey: profilesKey),
+              let profiles = try? JSONDecoder().decode([BackendProfile].self, from: data) else {
+            return []
         }
-        set {
-            UserDefaults.standard.set(try? JSONEncoder().encode(newValue), forKey: profilesKey)
-        }
+        return profiles
     }
 
     /// Endpoint of the OpenAI-compatible API. Cloud: https://api.openai.com;
