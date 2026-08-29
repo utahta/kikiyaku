@@ -172,6 +172,12 @@ final class AppState {
     /// explanation. Shown as a banner over the transcript until dismissed, or
     /// until the next session starts.
     var notice: PanelNotice?
+    /// A request to open the selected profile in its editor, raised from
+    /// outside the settings window (the record button, when the profile is
+    /// not set up enough to start). The settings screen watches this, opens
+    /// the editor, and lowers it again — it has to go back to false, or the
+    /// next raise is not a change and goes unnoticed.
+    var pendingProfileEdit = false
     /// Font size of translations. Mirrors Preferences; applies to the panel immediately.
     var fontSize = Preferences.fontSize
     /// Font size of the recognized source text. Mirrors Preferences; immediate.

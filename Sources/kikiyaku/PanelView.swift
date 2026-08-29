@@ -154,6 +154,22 @@ struct PanelView: View {
                 if state.isRunning {
                     await Engine.shared.stop()
                 } else {
+                    // The engine does not check the endpoint or the model
+                    // at start — it would run, fail three translations in a
+                    // row, and give up. So the profile is checked here, and
+                    // a profile that cannot start is taken to its editor
+                    // instead. The mirror is read back first: this panel
+                    // never activates the app, so a `defaults write` made
+                    // in a Terminal has had no other chance to be seen.
+                    let store = SessionProfileStore.shared
+                    store.importMirrorIntoSelected()
+                    if let problem = store.selected.setupProblem {
+                        state.notice = PanelNotice(
+                            kind: .warning,
+                            message: LF("notice.setupNeeded", problem.message))
+                        AppDelegate.requestShowSettings(editingProfile: true)
+                        return
+                    }
                     await Engine.shared.start()
                 }
             }

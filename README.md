@@ -73,7 +73,7 @@ The app is signed ad hoc, which means its signature changes with every release. 
 ## Setup
 
 1. Launch the app — a captions icon appears in the menu bar and the panel opens.
-2. Open **Settings…** from the menu bar icon and pick the mode, the audio input, and the two languages. The less obvious settings have a **?** beside them with a short explanation.
+2. A fresh install starts with a profile named **Not configured**. Press the record button and its editor opens: pick the mode, the audio input, the two languages, and a backend — the **Preset** menu fills in the connection for Ollama, LM Studio, OpenAI, or the Claude CLI. Save, and the profile is ready. Profiles can be edited and switched later from **Settings…** or the menu bar icon; the less obvious settings have a **?** beside them with a short explanation.
 3. Press the round **record button** in the panel's footer. On first use, macOS asks for microphone (or system audio recording) and speech recognition permission, and the recognition model for each language in use is downloaded automatically.
 
 Session settings are fixed while a session is running — stop first to change the mode, the audio input, the languages, or the backend. The display settings (font size, opacity, ordering, and so on) can be changed at any time and take effect immediately.
@@ -82,7 +82,7 @@ For the bidirectional modes, earphones are recommended when capturing both the m
 
 ### Backend: OpenAI API
 
-Select **OpenAI-compatible (API / local)**, keep the URL `https://api.openai.com` and the model `gpt-5.6-terra` (the default — see [Choosing a model](#choosing-a-model)), and paste your API key. Keys are stored in the macOS Keychain, **per endpoint** (scheme, host, and port), and are only ever sent to that endpoint.
+Select **OpenAI-compatible (API / local)**, choose the **OpenAI** preset — or set the URL to `https://api.openai.com` and the model to `gpt-5.6-terra` yourself (see [Choosing a model](#choosing-a-model)) — and paste your API key. Keys are stored in the macOS Keychain, **per endpoint** (scheme, host, and port), and are only ever sent to that endpoint.
 
 ### Backend: local server (Ollama, LM Studio etc.)
 
@@ -102,7 +102,7 @@ ollama run gemma4:26b-a4b-it-qat --think=false "hi"   # the 32 GB pick — see C
 
 The server has to be running before anything else: `ollama pull` and `ollama list` both talk to it and fail without it. `ollama run` downloads the model if it is not there yet, so it doubles as the first fetch — 16 GB, once. `--think=false` is there only so that this one command returns promptly instead of waiting out a paragraph of reasoning about the word "hi"; it says nothing about how Kikiyaku will use the model.
 
-Then point Kikiyaku at `http://localhost:11434` with the model name `gemma4:26b-a4b-it-qat`. `ollama ps` shows what is in memory and the context it was loaded with.
+Then, in Kikiyaku's profile editor, choose the **Ollama** preset and enter the model name `gemma4:26b-a4b-it-qat` (or pick it with **Fetch models**). `ollama ps` shows what is in memory and the context it was loaded with.
 
 Both environment variables are worth setting, because their defaults cause problems that are hard to attribute:
 
