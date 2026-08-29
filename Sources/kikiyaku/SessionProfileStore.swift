@@ -89,6 +89,40 @@ struct SessionProfile: Codable, Identifiable, Hashable, Sendable {
         )
     }
 
+    /// The one profile a fresh install starts with: blank, under a name that
+    /// says so. Translating rather than transcribing, so that the first press
+    /// of the record button leads into the editor instead of quietly running
+    /// without the feature the app is named for.
+    static func unconfigured() -> SessionProfile {
+        var profile = blank()
+        profile.name = L("profiles.unconfigured")
+        return profile
+    }
+
+    /// What is missing for a session to start with this profile, or nil.
+    /// The single rule the editor's Save and the record button both apply,
+    /// so that the two cannot disagree about what "configured" means.
+    /// Transcription needs no LLM at all; the translating modes need a model,
+    /// and the OpenAI-compatible backend an endpoint that parses as one.
+    ///
+    /// Not covered: the name (a saving concern, not a starting one), the
+    /// languages (the engine checks them against the recognizer at start),
+    /// the claude binary (a fact about the machine, not the profile), and
+    /// the API key (Ollama and LM Studio need none, so it cannot be required).
+    var setupProblem: ProfileError? {
+        guard mode.translates else { return nil }
+        switch backend {
+        case "openai":
+            if openAIModel.isEmpty { return .emptyModel }
+            if OpenAICompatSession.endpointURL(baseURL: openAIBaseURL) == nil { return .invalidURL }
+        case "claude":
+            if claudeModel.isEmpty { return .emptyModel }
+        default:
+            break
+        }
+        return nil
+    }
+
     /// The current mirror keys, read back as a profile.
     static func fromPreferences(id: UUID, name: String) -> SessionProfile {
         SessionProfile(
@@ -186,10 +220,22 @@ final class SessionProfileStore {
     private static let schemaVersionKey = "sessionProfilesSchemaVersion"
     private static let schemaVersion = 1
 
+    /// The keys the engine reads. Their presence is what tells an existing
+    /// installation from a fresh one when no profile record exists yet.
+    private static let mirrorKeys = [
+        "translationEnabled", "bidirectionalTranslation", "audioSource",
+        "sourceLocaleID", "targetLocaleID", "translationBackend",
+        "openAIBaseURL", "openAIModel", "claudeModel", "provisionalTranslation",
+    ]
+
     private init() {
         let defaults = UserDefaults.standard
         if defaults.integer(forKey: Self.schemaVersionKey) < Self.schemaVersion {
-            migrate()
+            if Self.isFreshInstall(defaults) {
+                startUnconfigured()
+            } else {
+                migrate()
+            }
             return
         }
         if let data = defaults.data(forKey: Self.profilesKey),
@@ -223,6 +269,31 @@ final class SessionProfileStore {
     }
 
     // MARK: - Migration
+
+    /// Nothing of an earlier version is present: no old profile key (the key
+    /// itself — an empty array stored there is evidence of use) and none of
+    /// the mirror keys. Anything saved makes this an existing installation,
+    /// whose saved values are carried over by `migrate`. What is deliberately
+    /// not carried over is an old default that was never saved: a person who
+    /// ran on the old OpenAI default without touching the settings has no
+    /// keys and starts unconfigured, which is the point of this change.
+    private static func isFreshInstall(_ defaults: UserDefaults) -> Bool {
+        guard defaults.object(forKey: Preferences.legacyProfilesKey) == nil else { return false }
+        return mirrorKeys.allSatisfy { defaults.object(forKey: $0) == nil }
+    }
+
+    /// A fresh install's one profile. The mirror is not written: the getters'
+    /// defaults already read as this profile, and a mirror key written before
+    /// the version stamp would make a launch that died in between look like
+    /// an existing installation on the next try.
+    private func startUnconfigured() {
+        let profile = SessionProfile.unconfigured()
+        profiles = [profile]
+        selectedID = profile.id
+        persist()
+        persistSelection()
+        UserDefaults.standard.set(Self.schemaVersion, forKey: Self.schemaVersionKey)
+    }
 
     /// First launch with this schema. The old backend-only profiles are kept
     /// as profiles, each completed with the current session settings; the

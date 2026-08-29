@@ -190,7 +190,8 @@ enum Preferences {
         set { UserDefaults.standard.set(newValue, forKey: backendKey) }
     }
 
-    private static let profilesKey = "backendProfiles"
+    static let legacyProfilesKey = "backendProfiles"
+    private static let profilesKey = legacyProfilesKey
 
     /// The backend-only profiles of earlier versions, kept for the migration
     /// into session profiles (SessionProfileStore). The key is left in place
@@ -203,15 +204,22 @@ enum Preferences {
         return profiles
     }
 
-    /// Endpoint of the OpenAI-compatible API. Cloud: https://api.openai.com;
-    /// local: http://localhost:1234 (LM Studio) and the like.
+    /// Endpoint of the OpenAI-compatible API. Local: http://localhost:11434
+    /// (Ollama), http://localhost:1234 (LM Studio) and the like; cloud:
+    /// https://api.openai.com.
+    ///
+    /// No default. A fresh install starts with an unconfigured profile and
+    /// is walked to the editor on the first start; a default here would
+    /// resurface as a made-up "working" configuration whenever the profile
+    /// record has to be rebuilt from these keys.
     static var openAIBaseURL: String {
-        get { UserDefaults.standard.string(forKey: openAIBaseURLKey) ?? "https://api.openai.com" }
+        get { UserDefaults.standard.string(forKey: openAIBaseURLKey) ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: openAIBaseURLKey) }
     }
 
+    /// No default, for the same reason as the endpoint.
     static var openAIModel: String {
-        get { UserDefaults.standard.string(forKey: openAIModelKey) ?? "gpt-5.6-terra" }
+        get { UserDefaults.standard.string(forKey: openAIModelKey) ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: openAIModelKey) }
     }
 

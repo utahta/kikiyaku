@@ -240,10 +240,15 @@ struct SettingsView: View {
 
     // MARK: - Profile actions
 
-    /// The selected profile's own standing — the languages it names that the
-    /// recognizer does not know. Shown beside the profile control, since the
-    /// menu bar refuses such a profile and Edit… here is where it gets fixed.
+    /// The selected profile's own standing: what it lacks to start with, or
+    /// a language it names that the recognizer does not know. Shown beside
+    /// the profile control, since Edit… right there is where either gets
+    /// fixed. The missing setup comes first — it is what the record button
+    /// will refuse on.
     private var selectedProfileProblem: ProfileError? {
+        if let problem = selected.setupProblem {
+            return problem
+        }
         if case .unsupported(let error) = store.switchability(of: store.selectedID) {
             return error
         }
@@ -382,7 +387,7 @@ struct SettingsView: View {
                         if translationActive {
                             summaryRow("server.rack", backendSummary)
                             summaryRow("cpu", modelSummary)
-                            if selected.backend == "openai" {
+                            if selected.backend == "openai", !selected.openAIBaseURL.isEmpty {
                                 GridRow {
                                     Color.clear.frame(width: 16, height: 1)
                                     Text(selected.openAIBaseURL)
@@ -587,6 +592,22 @@ struct SettingsView: View {
         }
         .sheet(item: $editor) { context in
             ProfileEditorSheet(context: context) { editor = nil }
+        }
+        // The record button asks for the editor from outside this window.
+        // Both hooks are needed: .task for a window created by the request,
+        // .onChange for the reused one (the window is kept, so .task runs
+        // once). Either way the flag goes back down, or the next request
+        // would not register as a change.
+        .task { openEditorIfRequested() }
+        .onChange(of: AppState.shared.pendingProfileEdit) { openEditorIfRequested() }
+    }
+
+    private func openEditorIfRequested() {
+        guard AppState.shared.pendingProfileEdit else { return }
+        AppState.shared.pendingProfileEdit = false
+        // A sheet already open keeps its draft; the request is satisfied.
+        if editor == nil {
+            editor = .edit(selected)
         }
     }
 

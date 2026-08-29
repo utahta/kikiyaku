@@ -68,7 +68,7 @@ enum BackendPreset: CaseIterable, Identifiable {
             draft.openAIModel = ""
         case .ollama:
             draft.backend = "openai"
-            draft.openAIBaseURL = "http://127.0.0.1:11434"
+            draft.openAIBaseURL = "http://localhost:11434"
             draft.openAIModel = ""
         case .claudeCLI:
             draft.backend = "claude"
@@ -590,11 +590,8 @@ struct ProfileEditorSheet: View {
            let missing = profile.recognizedLocaleIDs.first(where: { !store.supportedLocaleIDs.contains($0) }) {
             return .unsupportedLanguage(Preferences.option(id: missing).label)
         }
-        if profile.mode.translates, profile.backend == "openai" {
-            if profile.openAIModel.isEmpty { return .emptyModel }
-            if OpenAICompatSession.endpointURL(baseURL: profile.openAIBaseURL) == nil { return .invalidURL }
-        }
-        return nil
+        // The same rule the record button applies before starting.
+        return profile.setupProblem
     }
 
     /// Takes `any Error` because a `do` around a SwiftUI action loses the

@@ -239,7 +239,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
     /// inside the menu-dismissal display cycle — creating the window right
     /// there makes AppKit throw over "constraint updates during a display
     /// cycle" (macOS 26). Always defer by one runloop turn.
-    static func requestShowSettings() {
+    static func requestShowSettings(editingProfile: Bool = false) {
+        if editingProfile {
+            AppState.shared.pendingProfileEdit = true
+        }
         DispatchQueue.main.async {
             showSettings()
         }
