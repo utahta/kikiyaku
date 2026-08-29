@@ -184,13 +184,11 @@ struct SettingsView: View {
         }
     }
 
-    /// The short names — the Picker's carry a parenthetical explanation that
-    /// helps when choosing and only takes room when summarizing.
     private var audioSourceLabel: String {
         switch selected.audioSource {
-        case "mic": L("settings.audioSource.mic.short")
-        case "both": L("settings.audioSource.both.short")
-        default: L("settings.audioSource.system.short")
+        case "mic": L("settings.audioSource.mic")
+        case "both": L("settings.audioSource.both")
+        default: L("settings.audioSource.system")
         }
     }
 
@@ -223,12 +221,12 @@ struct SettingsView: View {
     /// switch. The model and the endpoint get lines of their own.
     private var backendSummary: String {
         if selected.backend == "claude" {
-            return L("settings.backend.claude.short")
+            return L("settings.backend.claude")
         }
         let provisional = selected.provisionalTranslation
             ? L("settings.summary.provisionalOn")
             : L("settings.summary.provisionalOff")
-        return "\(L("settings.backend.openai.short")) · \(provisional)"
+        return "\(L("settings.backend.openai")) · \(provisional)"
     }
 
     private var modelSummary: String {

@@ -29,13 +29,13 @@ Anything spoken that your Mac can play, or that a microphone can hear.
   - **Bilingual transcription** — both languages recognized and recorded, no translation.
 - **Microphone, system audio, or both** — system audio transcribes whatever your Mac is playing; with both, your own voice comes from the microphone at the same time.
 - **Pluggable LLM translation backends**
-  - **OpenAI-compatible API** (the default) — works with OpenAI's cloud (`https://api.openai.com`) or any OpenAI-compatible local / self-hosted server such as LM Studio, llama.cpp, Ollama, or vLLM. With a local MoE model this gives fully-offline translation at sub-second latency.
+  - **OpenAI-compatible API** (the default) — works with any OpenAI-compatible local / self-hosted server such as Ollama, LM Studio, llama.cpp, or vLLM, as well as OpenAI's cloud (`https://api.openai.com`). With a local MoE model this gives fully-offline translation at sub-second latency.
   - **Claude CLI** — drives a persistent `claude` process using your existing Claude subscription. Launched in an isolated, minimal configuration (no settings, no MCP servers, no tools, no session persistence).
 - **Conversation-aware translation** — every request carries the session's history, so terminology stays consistent and mis-recognized words are often recovered.
 - **Provisional translation** (one-direction modes, OpenAI-compatible backend) — a long utterance is translated sentence by sentence as it is spoken, shown in a pale style and replaced by the final translation when the utterance ends.
 - **Floating panel** — always on top, never steals focus (works over full-screen apps). Adjustable font size, background opacity, and ordering (newest-on-top with a pinned live region, or bottom-follow, which keeps the newest line in view until you scroll up to re-read something). Timestamps come from when the words were spoken, not when they were recognized, so both panels and the saved transcript agree.
 - **A panel per language, in the bidirectional modes** — with translation on, each panel carries the whole conversation in one language: what was said in it, plus translations of everything said in the other, so you can read one and share the other. Bilingual transcription has no translations to fill those gaps, so there each panel holds only what was actually said in its language. They snap into alignment when dragged together, and a menu command arranges them.
-- **Language pairs** — any two languages SpeechTranscriber supports (about 30 locales), script-aware (e.g. zh-Hans vs zh-Hant).
+- **Language pairs** — the recognized language is any of the locales SpeechTranscriber supports (about 30), script-aware (e.g. zh-Hans vs zh-Hant). In one-direction translation the target is only ever translated into, so it can be any language the model knows — a few hundred are offered, with quality depending on the model.
 - **Confidence filter** — in the one-direction modes, an utterance recognized with low confidence (usually chatter in another language) stays in the transcript but is not translated. In the bidirectional modes the same threshold discards low-confidence candidates as probable wrong-language readings; results that land close together may still both survive.
 - **Session transcripts** — on stop, the session is saved as JSONL (one utterance per line: time, capture channel, recognized language, source, translation, confidence).
 - **Auto-stop** — stops and saves after N minutes of silence.
@@ -45,7 +45,7 @@ Anything spoken that your Mac can play, or that a microphone can hear.
 
 - macOS 26.0 or later, Apple Silicon
 - For translation, one of:
-  - An OpenAI-compatible endpoint (the default backend) — a local server such as [LM Studio](https://lmstudio.ai/), which needs no key, or OpenAI's cloud with an API key
+  - An OpenAI-compatible endpoint (the default backend) — a local server such as [Ollama](https://ollama.com/) or [LM Studio](https://lmstudio.ai/) (recommended; no key needed), or OpenAI's cloud with an API key
   - [Claude Code CLI](https://code.claude.com/) (`claude`) with an active subscription or API login
 
 Transcription-only use needs no backend at all.
@@ -74,19 +74,15 @@ The app is signed ad hoc, which means its signature changes with every release. 
 
 1. Launch the app — a captions icon appears in the menu bar and the panel opens.
 2. A fresh install starts with a profile named **Not configured**. Press the record button and its editor opens: pick the mode, the audio input, the two languages, and a backend — the **Preset** menu fills in the connection for Ollama, LM Studio, OpenAI, or the Claude CLI. Save, and the profile is ready. Profiles can be edited and switched later from **Settings…** or the menu bar icon; the less obvious settings have a **?** beside them with a short explanation.
-3. Press the round **record button** in the panel's footer. On first use, macOS asks for microphone (or system audio recording) and speech recognition permission, and the recognition model for each language in use is downloaded automatically.
+3. Press the **record button** again to start. On first use, macOS asks for microphone (or system audio recording) and speech recognition permission, and the recognition model for each language in use is downloaded automatically.
 
-Session settings are fixed while a session is running — stop first to change the mode, the audio input, the languages, or the backend. The display settings (font size, opacity, ordering, and so on) can be changed at any time and take effect immediately.
+A session's settings are fixed when it starts — stop first to switch or edit the profile. The display settings (font size, opacity, ordering, and so on) can be changed at any time and take effect immediately.
 
 For the bidirectional modes, earphones are recommended when capturing both the microphone and system audio, so the microphone does not pick up the speakers as well.
 
-### Backend: OpenAI API
+### Backend: local server (Ollama, LM Studio etc.) — recommended
 
-Select **OpenAI-compatible (API / local)**, choose the **OpenAI** preset — or set the URL to `https://api.openai.com` and the model to `gpt-5.6-terra` yourself (see [Choosing a model](#choosing-a-model)) — and paste your API key. Keys are stored in the macOS Keychain, **per endpoint** (scheme, host, and port), and are only ever sent to that endpoint.
-
-### Backend: local server (Ollama, LM Studio etc.)
-
-Select **OpenAI-compatible (API / local)** and point the URL at your server — `http://localhost:11434` for Ollama, `http://localhost:1234` for LM Studio (a trailing `/v1` also works). No key needed.
+On a Mac with 32 GB or more, this is the setup to use: nothing said in the meeting leaves the machine, and a local MoE model answers faster than any cloud backend tried (see [Choosing a model](#choosing-a-model)). Select **OpenAI-compatible** and point the URL at your server — `http://localhost:11434` for Ollama, `http://localhost:1234` for LM Studio (a trailing `/v1` also works). No key needed.
 
 Any OpenAI-compatible server will do — llama.cpp, vLLM and the rest — and each can be set up however you prefer. What follows is one way, using Ollama:
 
@@ -97,7 +93,7 @@ brew install ollama                         # or download it from ollama.com
 OLLAMA_CONTEXT_LENGTH=16384 OLLAMA_KEEP_ALIVE=1h ollama serve
 
 # in another
-ollama run gemma4:26b-a4b-it-qat --think=false "hi"   # the 32 GB pick — see Choosing a model
+ollama run gemma4:26b-a4b-it-qat --think=false "hi"   # the recommended model — see Choosing a model
 ```
 
 The server has to be running before anything else: `ollama pull` and `ollama list` both talk to it and fail without it. `ollama run` downloads the model if it is not there yet, so it doubles as the first fetch — 16 GB, once. `--think=false` is there only so that this one command returns promptly instead of waiting out a paragraph of reasoning about the word "hi"; it says nothing about how Kikiyaku will use the model.
@@ -111,11 +107,15 @@ Both environment variables are worth setting, because their defaults cause probl
 
 Ollama listens on `127.0.0.1` only; set `OLLAMA_HOST=0.0.0.0:11434` to reach it from another machine.
 
-See [Choosing a model](#choosing-a-model) for which model to run on which machine.
+See [Choosing a model](#choosing-a-model) for how the model was chosen and what to expect from it.
+
+### Backend: OpenAI API
+
+Select **OpenAI-compatible**, choose the **OpenAI** preset — or set the URL to `https://api.openai.com` and the model to `gpt-5.6-terra` yourself (see [Choosing a model](#choosing-a-model)) — and paste your API key. Keys are stored in the macOS Keychain, **per endpoint** (scheme, host, and port), and are only ever sent to that endpoint.
 
 ### Backend: Claude CLI
 
-Select **Claude (CLI)** as the backend. The `claude` binary is auto-detected (`~/.local/bin`, `/opt/homebrew/bin`, …) and the path can be overridden in settings. Choose a model (Sonnet is the default; Haiku is cheapest).
+Select **Claude CLI** as the backend, or choose the **Claude CLI** preset. The `claude` binary is auto-detected (`~/.local/bin`, `/opt/homebrew/bin`, …) and the path can be overridden in settings. Choose a model (Sonnet is preselected; Haiku is cheapest).
 
 The CLI session is strictly serial, at roughly two to three seconds per utterance. That is fine for one-direction translation, but the bidirectional modes translate every utterance from both sides, so a lively conversation can queue up behind it; an OpenAI-compatible backend is the better fit there.
 
@@ -123,19 +123,18 @@ Privacy notes: recognized text (not audio) is sent to Anthropic for translation.
 
 ## Choosing a model
 
-Latency is what decides whether captions are usable, so the models behind each backend were measured against each other: 33 utterances from a recorded interview, sent with the conversation history, thinking disabled, non-streaming. Local models ran in LM Studio on Apple Silicon with 64 GB. Figures are the mean per utterance, measured in August 2026.
+Latency is what decides whether captions are usable, so the models behind each backend were measured: 33 utterances from a recorded interview, sent with the conversation history, thinking disabled, non-streaming. Figures are the mean per utterance, measured in August 2026.
 
-**Local models (OpenAI-compatible API)** — what to run on which machine
+**Local model (OpenAI-compatible API)** — the recommended setup
 
 | Machine | Model | Per utterance | |
 |---|---|---|---|
-| Apple Silicon, 64 GB | **qwen3.6 35B A3B** (MoE, ~3B active, MLX 4bit) | **0.84 s** | best on both counts: fastest, and the most faithful with figures |
-| Apple Silicon, 32 GB | **gemma4 26B A4B QAT** (MoE, ~3.8B active) | 0.91 s\* | recommended because 15.6 GB loaded leaves the rest of a 32 GB machine room to work; a little looser with figures than the 64 GB pick |
+| Apple Silicon, 32 GB or more | **gemma4 26B A4B QAT** (MoE, ~3.8B active) | **0.88 s** | 10 runs through Ollama on a 64 GB machine: per-run means of 0.85–0.90 s, median 0.80 s, p90 1.37 s. 15.6 GB loaded leaves a 32 GB machine room to work |
 | Less than 32 GB | — | | nothing tried here fit with room to spare; a remote endpoint is the better answer |
 
-Model names differ by server: `gemma4:26b-a4b-it-qat` on Ollama is `google/gemma-4-26b-a4b-qat` in LM Studio, and `qwen3.6-35b-a3b` likewise carries a `qwen/` prefix there. `ollama list` and `lms ls` give the exact string to put in the settings.
+The model name is `gemma4:26b-a4b-it-qat` on Ollama and `google/gemma-4-26b-a4b-qat` in LM Studio; `ollama list` and `lms ls` give the exact string to put in the settings.
 
-\* Every local figure was measured on the 64 GB machine. The 32 GB row says what fits there, not what it clocks there.
+One thing to know before trusting it with figures: across those 10 runs it translated "180 million units" as "1.8 trillion yen of revenue" nine times out of ten, and gave a garbled sentence about a film's box office ten different sets of numbers. Round figures and percentages came through every time. If the numbers in a meeting matter, read them from the source line or use a larger model.
 
 **OpenAI API**
 
@@ -157,7 +156,7 @@ Measured through the persistent `claude` process, which is how this backend runs
 
 What the numbers amount to:
 
-- **Active parameters decide the speed, not the model's size.** An MoE model with about 3B active runs comfortably under a second, which is why the recommendations above are all MoE. A dense model of comparable total size took ten times as long in the same test — a dense 14B came in at 8.7 s per utterance, and a dense 27B was abandoned after one — so a model that is not MoE is unlikely to keep up whatever its size.
+- **Active parameters decide the speed, not the model's size.** An MoE model with about 3B active runs comfortably under a second, which is why the recommendation above is an MoE model. A dense model of comparable total size took ten times as long in the same test — a dense 14B came in at 8.7 s per utterance, and a dense 27B was abandoned after one — so a model that is not MoE is unlikely to keep up whatever its size.
 - **Thinking is time spent not translating**, and Kikiyaku asks for none of it. A model left to think produced 452–766 tokens of reasoning for a sentence whose translation is 17, taking 6.8–11.9 s instead of 0.3 s. The request carries `reasoning_effort: none` to every endpoint, which costs nothing where thinking was already off and saves that much where it was not, so there is no per-model setting to remember.
 - **A good local MoE model beats every remote backend on latency**, with nothing leaving the machine.
 - **Numbers are where the cheaper models give way.** A figure like "180 million units" comes back with the wrong magnitude, the wrong unit, or converted into a currency nobody asked for. The failure is not loud — the sentence still reads well — so if figures matter, stay with the larger models.
@@ -178,7 +177,7 @@ Speech recognition always runs on-device; audio is never sent anywhere. (Downloa
 | Backend | Audio | Recognized text |
 |---|---|---|
 | None (the transcription-only modes) | never sent | never sent |
-| OpenAI-compatible — local server (LM Studio etc.) | never sent | stays on your machine / LAN |
+| OpenAI-compatible — local server (Ollama, LM Studio etc.) | never sent | stays on your machine / LAN |
 | OpenAI-compatible — remote endpoint (OpenAI cloud, or any URL you configure) | never sent | sent to that endpoint, together with recent conversation history |
 | Claude CLI | never sent | sent to Anthropic, together with the session's conversation history |
 
