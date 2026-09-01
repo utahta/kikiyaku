@@ -265,10 +265,15 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     /// to a default history size while believing it had asked. Only the missing
     /// tag is supplied — two names that each name a tag are the same model only
     /// if they name the same one.
-    private static func namesTheSameOllamaModel(_ reported: String?, _ configured: String) -> Bool {
+    ///
+    /// A tag is a colon after the last slash. Looking for any colon mistook
+    /// the port of a registry-qualified name (`localhost:5000/team/model`)
+    /// for a tag, and such a name never matched its own `:latest` form.
+    static func namesTheSameOllamaModel(_ reported: String?, _ configured: String) -> Bool {
         guard let reported else { return false }
         func tagged(_ name: String) -> String {
-            name.contains(":") ? name : name + ":latest"
+            let afterSlash = name.lastIndex(of: "/").map { name[name.index(after: $0)...] } ?? name[...]
+            return afterSlash.contains(":") ? name : name + ":latest"
         }
         return tagged(reported) == tagged(configured)
     }
@@ -396,6 +401,12 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     /// over the edge.
     private static let historyShareOfContext = 0.55
 
+    /// How many utterances of history a reported context length affords.
+    static func historyCap(forContextLength contextLength: Int) -> Int {
+        let affordable = Int(Double(contextLength) * historyShareOfContext) / tokensPerExchange
+        return min(maximumHistoryCap, max(20, affordable))
+    }
+
     init(baseURL: String, apiKey: String?, model: String, systemPrompt: String) {
         self.endpoint = Self.endpointURL(baseURL: baseURL)
         self.baseURL = baseURL
@@ -451,9 +462,7 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     /// bad direction, since the server drops the front of an over-long prompt
     /// without telling anyone.
     private func adoptContextLength(_ contextLength: Int) {
-        let affordable = Int(Double(contextLength) * Self.historyShareOfContext)
-            / Self.tokensPerExchange
-        let cap = min(Self.maximumHistoryCap, max(20, affordable))
+        let cap = Self.historyCap(forContextLength: contextLength)
         stateLock.lock()
         let previous = historyCap
         historyCap = cap
@@ -528,20 +537,25 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         stateLock.lock()
         history.append(userMessage)
         history.append(["role": "assistant", "content": result])
-        // Half the cap is dropped in one batch when it is reached. A sliding
-        // window would move the prefix on every request and cost the prompt
-        // cache each time; this pays for it once, and then not again for
-        // another half-cap of conversation.
-        //
-        // Counted in exchanges and removed in pairs. The cap is a number of
-        // utterances while the array holds two messages each, so an odd cap —
-        // 39 utterances, say, which a 5,000-token context produces — would
-        // otherwise strand an assistant message with no user message before
-        // it, and hand the model a conversation that never happened.
-        if history.count >= historyCap * 2 {
-            history.removeFirst((historyCap / 2) * 2)
-        }
+        history = Self.trimmedHistory(history, cap: historyCap)
         stateLock.unlock()
+    }
+
+    /// Half the cap is dropped in one batch when it is reached. A sliding
+    /// window would move the prefix on every request and cost the prompt
+    /// cache each time; this pays for it once, and then not again for
+    /// another half-cap of conversation.
+    ///
+    /// Counted in exchanges and removed in pairs. The cap is a number of
+    /// utterances while the array holds two messages each, so an odd cap —
+    /// 39 utterances, say, which a 5,000-token context produces — would
+    /// otherwise strand an assistant message with no user message before
+    /// it, and hand the model a conversation that never happened.
+    static func trimmedHistory(
+        _ history: [[String: String]], cap: Int
+    ) -> [[String: String]] {
+        guard history.count >= cap * 2 else { return history }
+        return Array(history.dropFirst((cap / 2) * 2))
     }
 
     private func shouldSendReasoningEffort() -> Bool {

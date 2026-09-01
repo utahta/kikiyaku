@@ -43,6 +43,11 @@ jobs:
       # is what a release wants anyway: kikiyaku-dev is a local certificate
       # that exists on no one else's Mac. Xcode is present here, so the icon
       # step compiles the Assets.car that keeps the Dock from plating the icon.
+      # A failing test stops the release before anything is built or tagged
+      # into an asset.
+      - name: Test
+        run: swift test
+
       - name: Build
         run: ./scripts/build.sh
 
