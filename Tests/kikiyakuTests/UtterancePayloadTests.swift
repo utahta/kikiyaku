@@ -65,4 +65,65 @@ struct UtterancePayloadTests {
             UtterancePayload.wrap("hello", sourceID: "en-US", targetID: "ja-JP")
                 == #"<u source="en-US" target="ja-JP">hello</u>"#)
     }
+
+    // MARK: streamedDisplayText
+
+    private func shown(_ partial: String) -> String {
+        UtterancePayload.streamedDisplayText(partial, sourceID: "en-US", targetID: "ja-JP")
+    }
+
+    @Test func plainTextStreamsThrough() {
+        #expect(shown("訳") == "訳")
+        #expect(shown("訳文です。") == "訳文です。")
+        #expect(shown("\n 訳文") == "訳文")
+    }
+
+    /// An echoed envelope is held back until its opening tag has closed,
+    /// then shown without it.
+    @Test func anOpeningTagIsHeldBackAndThenDropped() {
+        #expect(shown("<") == "")
+        #expect(shown("<u source=\"en-US\"") == "")
+        #expect(shown("<u source=\"en-US\" target=\"ja-JP\">") == "")
+        #expect(shown("<u source=\"en-US\" target=\"ja-JP\">訳文") == "訳文")
+    }
+
+    /// The closing tag never shows, however much of it has arrived.
+    @Test func aClosingTagIsHiddenAsItArrives() {
+        let open = "<u source=\"en-US\" target=\"ja-JP\">"
+        #expect(shown(open + "訳文<") == "訳文")
+        #expect(shown(open + "訳文</") == "訳文")
+        #expect(shown(open + "訳文</u") == "訳文")
+        #expect(shown(open + "訳文</u>") == "訳文")
+        #expect(shown(open + "訳文</u>\n") == "訳文")
+    }
+
+    /// Without an opening tag there is no envelope, and a trailing `<` is
+    /// the translation's own.
+    @Test func aTrailingAngleIsKeptWhenNothingWasOpened() {
+        #expect(shown("a <") == "a <")
+        #expect(shown("a </u") == "a </u")
+    }
+
+    /// Only `<u …>` is the envelope. A translation that opens with other
+    /// markup — a meeting about HTML — shows as it arrives, and so does one
+    /// that opens with a `<u>` bearing no attributes, which the request
+    /// never sent.
+    @Test func otherMarkupAtTheStartIsShown() {
+        #expect(shown("<div>") == "<div>")
+        #expect(shown("<ul><li>") == "<ul><li>")
+        #expect(shown("<u>下線") == "<u>下線")
+        #expect(shown("<b") == "<b")
+        #expect(shown("< 3") == "< 3")
+    }
+
+    /// A `<u …>` that is not this request's envelope — other attributes, or
+    /// another pair's — is the translation's own once its tag has closed,
+    /// and its closing tag is its own too. unwrap() will keep it at the
+    /// end, so hiding it now would make the caption change on the swap.
+    @Test func aForeignUElementIsShownOnceItsTagHasClosed() {
+        #expect(shown("<u class=\"note\">注") == "<u class=\"note\">注")
+        #expect(shown("<u class=\"note\">注</u>") == "<u class=\"note\">注</u>")
+        #expect(shown("<u source=\"ja-JP\" target=\"en-US\">訳") == "<u source=\"ja-JP\" target=\"en-US\">訳")
+        #expect(shown("<u target=\"ja-JP\" source=\"en-US\">訳") == "訳")
+    }
 }

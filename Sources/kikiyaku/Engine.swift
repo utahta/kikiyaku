@@ -558,20 +558,30 @@ final class Engine {
             let sessionBox: LLMSessionBox? = provisionalEnabled ? LLMSessionBox() : nil
             let tracker: SentenceTracker? = provisionalEnabled ? SentenceTracker(locale: sourceLocale) : nil
             let trackerReset = TrackerResetFlag()
-            if let sessionBox, let llmFactory {
-                // Create the first session before any lane starts. Created
-                // inside the lane task, session setup races the recognition
-                // drain — audio buffered during analyzer warm-up can deliver
-                // the first sentence boundary immediately, and the provisional
-                // consumer would find an empty box and silently drop that
-                // request (per-request sessions are cheap to build here).
-                sessionBox.set(try? llmFactory())
+            var initialSession: (any LLMTranslator)?
+            if let llmFactory, backend == "openai" {
+                // Create the first session before any lane starts, for two
+                // reasons. Created inside the lane task, session setup races
+                // the recognition drain — audio buffered during analyzer
+                // warm-up can deliver the first sentence boundary
+                // immediately, and the provisional consumer would find an
+                // empty box and silently drop that request. And a session
+                // that exists now can start the server loading the model
+                // now, rather than when the first utterance is already
+                // waiting on it. Per-request sessions are cheap to build
+                // here; the pipe-based one launches a process, and stays
+                // with the lane's on-demand creation.
+                initialSession = try? llmFactory()
+                sessionBox?.set(initialSession)
+                (initialSession as? OpenAICompatSession)?.preload()
             }
 
             // Lanes come up before any channel starts draining, so the first
             // finalize always finds the translation feed in place.
             if let llmFactory {
-                startLLMTranslator(engineName: llmName, makeSession: llmFactory, sessionBox: sessionBox)
+                startLLMTranslator(
+                    engineName: llmName, makeSession: llmFactory,
+                    initialSession: initialSession, sessionBox: sessionBox)
             }
             if let sessionBox {
                 startProvisionalLane(
@@ -1660,16 +1670,17 @@ final class Engine {
     private func startLLMTranslator(
         engineName: String,
         makeSession: @escaping @Sendable () throws -> any LLMTranslator,
+        initialSession: sending (any LLMTranslator)? = nil,
         sessionBox: LLMSessionBox? = nil
     ) {
         let (feed, continuation) = AsyncStream<TranslationJob>.makeStream()
         claudeFeed = continuation
         claudeTask = Task.detached {
-            // The provisional lane shares this lane's session (context and all)
-            // through the box. The engine pre-creates it before any lane starts
-            // (see start()) so the provisional consumer never races session
-            // setup; adopt that instance here.
-            var session: (any LLMTranslator)? = sessionBox?.get()
+            // The engine may pre-create the session before any lane starts
+            // (see start()): the provisional lane shares it (context and
+            // all) through the box and must never race session setup, and
+            // the model preload wants it early. Adopt that instance here.
+            var session: (any LLMTranslator)? = initialSession
             var consecutiveFailures = 0
             var turns = 0
             var disabled = false
@@ -1690,8 +1701,34 @@ final class Engine {
                             sessionBox?.set(session)
                         }
                         guard let active = session else { break }
+                        // Partial text goes up as it streams in, so the row
+                        // reads while the answer is still being generated.
+                        // Each hop is its own MainActor task, and nothing
+                        // orders those against each other, against the
+                        // cleanup after a failure, or against the next
+                        // attempt's pieces — so each piece names the
+                        // attempt it belongs to and its position in it, and
+                        // the row takes only the current attempt's, only
+                        // forwards. The final below settles the row for
+                        // good, and the row refuses partial text from then
+                        // on.
+                        let jobID = job.id
+                        let attempt = await MainActor.run {
+                            AppState.shared.beginLLMTranslationAttempt(id: jobID)
+                        }
+                        let sequence = PartialSequence()
                         let result = try await active.translate(
-                            job.text, sourceID: job.sourceID, targetID: job.targetID)
+                            job.text, sourceID: job.sourceID, targetID: job.targetID,
+                            onPartial: { partial in
+                                guard let attempt else { return }
+                                let position = sequence.next()
+                                let shown = UtterancePayload.streamedDisplayText(
+                                    partial, sourceID: job.sourceID, targetID: job.targetID)
+                                Task { @MainActor in
+                                    AppState.shared.setLLMTranslationPartial(
+                                        id: jobID, attempt: attempt, sequence: position, text: shown)
+                                }
+                            })
                         turns += 1
                         if result.isEmpty {
                             // Treat an empty response as a failure too. A pipe-based
@@ -1712,6 +1749,13 @@ final class Engine {
                         // Log the reason to the unified log
                         // (log show --predicate 'process == "kikiyaku"').
                         NSLog("kikiyaku: %@ translate failed: %@", engineName, String(describing: error))
+                        // Whatever streamed in before the failure is not a
+                        // translation; take it down, and refuse the rest of
+                        // it, before the retry.
+                        let jobID = job.id
+                        await MainActor.run {
+                            AppState.shared.endLLMTranslationAttempt(id: jobID)
+                        }
                         // Discard pipe-based sessions: the response correspondence
                         // may be corrupted. Keep per-request sessions: the failed
                         // request was never recorded in history, and discarding the
@@ -1747,6 +1791,21 @@ final class Engine {
             }
             sessionBox?.set(nil)
             session?.shutdown()
+        }
+    }
+
+    /// Numbers the pieces of one streamed answer, from 1, so the row can
+    /// tell a later piece from an earlier one whatever order they land in.
+    /// The stream delivers pieces serially; the lock is for the compiler's
+    /// benefit, since the callback is @Sendable.
+    private final class PartialSequence: @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+        func next() -> Int {
+            lock.lock()
+            defer { lock.unlock() }
+            count += 1
+            return count
         }
     }
 

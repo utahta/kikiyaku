@@ -25,7 +25,16 @@ protocol LLMTranslator {
     /// The direction travels with every call because bidirectional mode decides
     /// it per utterance (adopted language → the other); unidirectional mode
     /// simply passes the same pair every time.
-    func translate(_ text: String, sourceID: String, targetID: String) async throws -> String
+    ///
+    /// `onPartial` receives the answer so far, each time more of it arrives,
+    /// for an implementation that can stream one. It is display-only: the
+    /// returned value is the translation, and what was handed to `onPartial`
+    /// may still carry an envelope the return value has had removed. An
+    /// implementation that cannot stream never calls it.
+    func translate(
+        _ text: String, sourceID: String, targetID: String,
+        onPartial: (@Sendable (String) -> Void)?
+    ) async throws -> String
     /// Translate without recording the exchange into the session's conversation
     /// context. Used by the provisional lane, which runs concurrently with the
     /// main lane. Pipe-based implementations never receive this call — the
@@ -87,6 +96,50 @@ enum UtterancePayload {
               let match = attributes.firstMatch(of: pattern),
               let value = match.output[1].substring else { return nil }
         return String(value)
+    }
+
+    /// What to show of a streamed answer that is still arriving.
+    ///
+    /// unwrap() needs the whole answer: it only removes an envelope whose
+    /// attributes it can read to the end and whose closing tag is there.
+    /// Mid-stream neither is, and an answer that opens with `<u source=` would
+    /// put the tag on the panel character by character until unwrap() took it
+    /// off at the end. So an opening `<u …>` tag is held back until its `>`
+    /// arrives and then dropped, and whatever of a `</u>` has arrived at the
+    /// end is hidden — but only after an opening tag was dropped, since a
+    /// translation that genuinely ends in `<` must not lose it.
+    ///
+    /// Only a `<u` followed by whitespace is held back (and the `<` or `<u`
+    /// that may precede it mid-stream), and once its `>` has arrived the tag
+    /// is dropped only when its attributes are the ones this request sent —
+    /// the same test unwrap() applies at the end. A translation about
+    /// markup can open with `<div>` or with a `<u class="note">` of its
+    /// own; hidden here, those would reappear in the final swap, since
+    /// unwrap() takes care to leave them alone.
+    ///
+    /// Display only. The recorded translation always comes from unwrap()
+    /// on the complete answer.
+    static func streamedDisplayText(_ partial: String, sourceID: String, targetID: String) -> String {
+        let text = Substring(partial).drop(while: \.isWhitespace)
+        guard text.first == "<" else { return String(text) }
+        let opensEnvelope = text == "<" || text == "<u"
+            || (text.hasPrefix("<u") && text.dropFirst(2).first?.isWhitespace == true)
+        guard opensEnvelope else { return String(text) }
+        guard let close = text.firstIndex(of: ">") else { return "" }
+        let attributes = String(text[text.index(text.startIndex, offsetBy: 2)..<close])
+        guard attribute("source", in: attributes) == sourceID,
+              attribute("target", in: attributes) == targetID else {
+            return String(text)
+        }
+        var body = text[text.index(after: close)...]
+        while body.last?.isWhitespace == true { body = body.dropLast() }
+        let closingTag = "</u>"
+        for length in stride(from: closingTag.count, through: 1, by: -1)
+        where body.hasSuffix(closingTag.prefix(length)) {
+            body = body.dropLast(length)
+            break
+        }
+        return String(body)
     }
 }
 
@@ -225,8 +278,12 @@ final class ClaudeSession: LLMTranslator, @unchecked Sendable {
 
     /// Translates one utterance. Throws on timeout or process death. In that case
     /// the session must be discarded and rebuilt (the request/response
-    /// correspondence is corrupted).
-    func translate(_ text: String, sourceID: String, targetID: String) async throws -> String {
+    /// correspondence is corrupted). The CLI's stream-json output delivers the
+    /// answer whole, so `onPartial` is never called.
+    func translate(
+        _ text: String, sourceID: String, targetID: String,
+        onPartial: (@Sendable (String) -> Void)?
+    ) async throws -> String {
         let payload: [String: Any] = [
             "type": "user",
             "message": [
