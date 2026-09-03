@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.3.2](https://github.com/utahta/kikiyaku/compare/v0.3.1...v0.3.2) - 2026-09-03
+
+- Pin the pure logic under tests, and run them before a release by @utahta in https://github.com/utahta/kikiyaku/pull/7
+- Stream final translations and preload the model at session start by @utahta in https://github.com/utahta/kikiyaku/pull/9
+
 ## [v0.3.1](https://github.com/utahta/kikiyaku/compare/v0.3.0...v0.3.1) - 2026-08-29
 
 - Recommend a local model, simplify the choice labels, open the panel as a subtitle strip by @utahta in https://github.com/utahta/kikiyaku/pull/5
