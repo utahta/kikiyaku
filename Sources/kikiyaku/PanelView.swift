@@ -515,7 +515,7 @@ private struct HistoryContent: View {
     @ViewBuilder
     private var translationSlot: some View {
         if let lingering {
-            if lingering.translation != nil {
+            if lingering.translation != nil || lingering.partialTranslation != nil {
                 TranslationText(utterance: lingering, fontSize: state.fontSize, selectable: liveSourceSettled)
             } else if lingering.translationSkipped {
                 Text(LF("panel.skippedConfidence", lingering.confidence.map { String(format: "%.2f", $0) } ?? "-"))
@@ -528,8 +528,8 @@ private struct HistoryContent: View {
                 // (same treatment as history rows).
                 let awaitingFinal =
                     lingering.translationState(translating: state.translationReady) == .pending
-                if let interim = lingering.interimTranslation {
-                    Text(interim)
+                if let provisional = lingering.provisionalTranslation {
+                    Text(provisional)
                         .font(.system(size: state.fontSize))
                         .multilineTextAlignment(.leading)
                         // Dimmed while the final is still due — with the
@@ -544,7 +544,7 @@ private struct HistoryContent: View {
                 } else if awaitingFinal {
                     SkeletonLine(fontSize: state.fontSize)
                 }
-                if !awaitingFinal, lingering.interimTranslation != nil {
+                if !awaitingFinal, lingering.provisionalTranslation != nil {
                     Text(L("panel.provisionalKept"))
                         .font(.system(size: max(8, state.fontSize * 0.6)))
                         .foregroundStyle(.tertiary)
@@ -848,6 +848,8 @@ private struct BilingualContent: View {
     private func row(_ utterance: Utterance) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             UtteranceTime(date: utterance.time, fontSize: state.fontSize)
+            // Every row carries the rail's gutter, so rows line up whether
+            // or not one ever showed the rail.
             VStack(alignment: .leading, spacing: 3) {
                 if utterance.language == language {
                     // The original, in this panel's own language.
@@ -864,20 +866,11 @@ private struct BilingualContent: View {
                             .foregroundStyle(.secondary)
                             .selectable(state.sourceTextVisible)
                     }
-                    if utterance.translation != nil {
+                    if utterance.translation != nil || utterance.partialTranslation != nil {
                         TranslationText(
                             utterance: utterance,
                             fontSize: state.fontSize,
                             selectable: state.sourceTextVisible)
-                    } else if let partial = utterance.partialTranslation {
-                        // The final as far as it has streamed in. This
-                        // layout has no provisional lane, so a partial is
-                        // the only interim text a row can have.
-                        Text(partial)
-                            .font(.system(size: state.fontSize))
-                            .foregroundStyle(.secondary)
-                            .selectable(state.sourceTextVisible)
-                            .liveRail(true)
                     } else if utterance.finalTranslationFailed {
                         Text(L("translation.failed"))
                             .font(.system(size: max(8, state.fontSize * 0.72)))
@@ -887,6 +880,7 @@ private struct BilingualContent: View {
                     }
                 }
             }
+            .liveRail(utterance.isStreamingTranslation)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .multilineTextAlignment(.leading)
@@ -913,7 +907,23 @@ private struct TranslationText: View {
 
     var body: some View {
         Group {
-            if let translation = utterance.translation {
+            if let partial = utterance.partialTranslation {
+                // A streamed row: the arriving text and the settled one are
+                // the same wording, so one Text draws both and nothing slides
+                // in when the answer completes.
+                ZStack(alignment: .topLeading) {
+                    // The provisional this text replaces keeps holding the
+                    // row's height while the answer streams in, invisibly:
+                    // the first piece is a few characters, and without it
+                    // a two-line row would collapse and then grow back.
+                    if utterance.isStreamingTranslation,
+                       let provisional = utterance.provisionalTranslation {
+                        Text(provisional).hidden()
+                    }
+                    Text(utterance.translation ?? partial)
+                }
+                .animation(.easeInOut(duration: 0.2), value: utterance.isStreamingTranslation)
+            } else if let translation = utterance.translation {
                 if utterance.isLLMTranslation {
                     Text(translation)
                         .transition(.asymmetric(
@@ -956,7 +966,17 @@ private struct UtteranceRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// Whether the row is still in motion: its final translation streaming
+    /// in, or a carried-over provisional with the final still due.
+    private var inMotion: Bool {
+        utterance.isStreamingTranslation
+            || (utterance.provisionalTranslation != nil
+                && utterance.translationState(translating: showsPending) == .pending)
+    }
+
     private var content: some View {
+        // Every row carries the rail's gutter, so rows line up whether or
+        // not one ever showed the rail.
         VStack(alignment: .leading, spacing: 3) {
             if sourceVisible {
                 Text(utterance.source)
@@ -964,23 +984,20 @@ private struct UtteranceRow: View {
                     .foregroundStyle(utterance.translationSkipped ? .tertiary : .secondary)
                     .selectable(selectable)
             }
-            if utterance.translation != nil {
+            if utterance.translation != nil || utterance.partialTranslation != nil {
                 TranslationText(utterance: utterance, fontSize: fontSize, selectable: selectable)
-            } else if let interim = utterance.interimTranslation {
-                // The final as far as it has streamed in, else the
-                // provisional carried over at finalize. Dimmed either way —
-                // it is not the settled wording — and marked live by the
-                // rail only while a final is still due. Once none is coming
-                // (this row failed, or the lane stopped), the rail goes and
-                // a label says so explicitly, since colour alone would leave
-                // it looking like a settled translation.
+            } else if let provisional = utterance.provisionalTranslation {
+                // Provisional translation carried over at finalize. Dimmed
+                // either way — it is not the final wording. Once no final is
+                // coming (this row failed, or the lane stopped), a label says
+                // so explicitly, since colour alone would leave it looking
+                // like a settled translation.
                 let awaitingFinal =
                     utterance.translationState(translating: showsPending) == .pending
-                Text(interim)
+                Text(provisional)
                     .font(.system(size: fontSize))
                     .foregroundStyle(.secondary)
                     .selectable(selectable)
-                    .liveRail(awaitingFinal)
                 if !awaitingFinal {
                     Text(L("panel.provisionalKept"))
                         .font(.system(size: max(8, fontSize * 0.6)))
@@ -1000,6 +1017,7 @@ private struct UtteranceRow: View {
                 SkeletonLine(fontSize: fontSize)
             }
         }
+        .liveRail(inMotion)
     }
 }
 

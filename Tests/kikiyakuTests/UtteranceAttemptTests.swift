@@ -19,7 +19,6 @@ struct UtteranceAttemptTests {
         row.applyPartialTranslation("こん", attempt: attempt, sequence: 1)
         row.applyPartialTranslation("こんにちは", attempt: attempt, sequence: 2)
         #expect(row.partialTranslation == "こんにちは")
-        #expect(row.interimTranslation == "こんにちは")
     }
 
     /// Pieces of one attempt are not ordered against each other either;
@@ -69,16 +68,16 @@ struct UtteranceAttemptTests {
         #expect(row.partialTranslation == "二")
     }
 
-    /// Ending the attempt brings back the provisional carried over at
-    /// finalize, which the streamed text had only been standing in for.
-    @Test func endingAnAttemptRestoresTheProvisional() {
+    /// Ending the attempt leaves the provisional carried over at finalize
+    /// in place for the panel to fall back on.
+    @Test func endingAnAttemptLeavesTheProvisional() {
         var row = utterance()
         row.provisionalTranslation = "仮"
         let attempt = row.beginTranslationAttempt()
         row.applyPartialTranslation("本", attempt: attempt, sequence: 1)
-        #expect(row.interimTranslation == "本")
         row.endTranslationAttempt()
-        #expect(row.interimTranslation == "仮")
+        #expect(row.partialTranslation == nil)
+        #expect(row.provisionalTranslation == "仮")
     }
 
     /// A settled row takes no partial text, and an empty piece never puts a

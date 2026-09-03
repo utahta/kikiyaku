@@ -19,10 +19,12 @@ struct Utterance: Identifiable, Sendable {
     /// utterance finalized. Shown (in the pale style) until the final
     /// translation replaces it. Transient — never saved to the JSONL.
     var provisionalTranslation: String? = nil
-    /// The final translation as far as it has streamed in. Shown in the
-    /// provisional style until the whole answer lands in `translation`, and
-    /// cleared when the attempt fails so the carried-over provisional, if
-    /// any, shows again. Transient — never saved to the JSONL.
+    /// The final translation as far as it has streamed in, shown in the
+    /// settled style since it is the final's own wording. Cleared when the
+    /// attempt fails so the carried-over provisional, if any, shows again;
+    /// kept once `translation` lands, which is how the panel knows the row
+    /// streamed and draws the settled text in place instead of sliding it
+    /// in. Transient — never saved to the JSONL.
     var partialTranslation: String? = nil
     /// Which attempt at the final translation `partialTranslation` belongs
     /// to. Partial text arrives on the main actor as separate tasks whose
@@ -57,12 +59,9 @@ struct Utterance: Identifiable, Sendable {
         translationEngine != nil
     }
 
-    /// What stands in for the translation while none is settled: the part
-    /// of the final that has arrived, else the provisional carried over at
-    /// finalize. The streamed part wins once it exists — it is the final's
-    /// own wording, and the provisional was only ever holding its place.
-    var interimTranslation: String? {
-        partialTranslation ?? provisionalTranslation
+    /// The final translation is arriving and has not settled yet.
+    var isStreamingTranslation: Bool {
+        partialTranslation != nil && translation == nil
     }
 
     /// Opens a new attempt at the final translation and returns its number;
@@ -384,7 +383,6 @@ final class AppState {
         guard let index = utterances.firstIndex(where: { $0.id == id }) else { return }
         utterances[index].translation = text
         utterances[index].translationEngine = engine
-        utterances[index].partialTranslation = nil
     }
 
     /// Called before each attempt at a streamed final translation. The
