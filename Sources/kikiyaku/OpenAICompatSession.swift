@@ -39,6 +39,10 @@ enum OpenAICompatError: Error, CustomStringConvertible {
     case httpError(Int, String)
     case badResponse
     case emptyResponse
+    /// The stream ended before the server said the answer was complete.
+    case streamTruncated
+    /// The server sent an error object in place of a chunk.
+    case streamError(String)
 
     var description: String {
         switch self {
@@ -46,6 +50,8 @@ enum OpenAICompatError: Error, CustomStringConvertible {
         case .httpError(let code, let body): return "HTTP \(code): \(body)"
         case .badResponse: return "unexpected response shape"
         case .emptyResponse: return "empty translation"
+        case .streamTruncated: return "stream ended before completion"
+        case .streamError(let message): return "stream error: \(message)"
         }
     }
 }
@@ -102,6 +108,12 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     /// parameter is what turns off — and Ollama, where thinking is on unless
     /// asked otherwise, was left doing it on every utterance.
     private var sendReasoningEffort = true
+    /// Whether to ask for a streamed answer. Asked of every endpoint until
+    /// one refuses it with a 400/422 naming the field, which is then
+    /// remembered like the reasoning parameter: an endpoint that serves the
+    /// ordinary completion but not the streamed one still translates, only
+    /// without partial text on the way. Guarded by stateLock.
+    private var sendStream = true
     /// Guarded by stateLock: both lanes call performChat concurrently and can
     /// write this (bad-URL path) while the main lane reads isAlive.
     private var alive = true
@@ -473,12 +485,16 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         }
     }
 
-    func translate(_ text: String, sourceID: String, targetID: String) async throws -> String {
+    func translate(
+        _ text: String, sourceID: String, targetID: String,
+        onPartial: (@Sendable (String) -> Void)?
+    ) async throws -> String {
         let userMessage = [
             "role": "user",
             "content": UtterancePayload.wrap(text, sourceID: sourceID, targetID: targetID),
         ]
-        let raw = try await performChat(messages: contextMessages(appending: userMessage))
+        let raw = try await performChat(
+            messages: contextMessages(appending: userMessage), onPartial: onPartial)
         // Normalized before it is recorded, not merely before it is shown: the
         // history is what the model reads back as an example of its own
         // answers, so a wrapped one left in it teaches the next hundred.
@@ -570,21 +586,186 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         stateLock.unlock()
     }
 
+    private func shouldSendStream() -> Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return sendStream
+    }
+
+    private func disableStream() {
+        stateLock.lock()
+        sendStream = false
+        stateLock.unlock()
+    }
+
+    /// Whether a failed request was refused over one optional field: a
+    /// 400 or 422 whose body names it. Only then is a retry without the
+    /// field worth making; any other failure retried that way would hide
+    /// the real complaint behind a second identical one.
+    static func refuses(field: String, status: Int, body: String) -> Bool {
+        (status == 400 || status == 422) && body.contains(field)
+    }
+
     private func markDead() {
         stateLock.lock()
         alive = false
         stateLock.unlock()
     }
 
+    /// Loads the model ahead of the first utterance.
+    ///
+    /// A local server loads the model when the first request arrives, and on
+    /// the machines this runs on that took 20–45 seconds (gemma4 26B on
+    /// Ollama 0.33, Apple M1 Pro / 32 GB) — all of it waited out by the first
+    /// utterance of every session. A one-token completion at session start
+    /// takes that wait while the user is still getting ready to speak, and
+    /// carries the system prompt so its prefix is in the server's cache
+    /// when the first real request follows.
+    ///
+    /// Never awaited and never cancelled: a client that disconnects while
+    /// the model is loading makes Ollama abort the load and start over on
+    /// the next request, which would leave the first utterance waiting the
+    /// full time after all. A failure is only logged — the first utterance
+    /// then loads the model the way it always did — and neither this nor
+    /// its answer goes anywhere near the history.
+    ///
+    /// The timeout is the model load plus margin; the translation requests
+    /// keep their own, which the load would otherwise be measured against.
+    ///
+    /// Reasoning is asked off here as on every translation: a model that
+    /// thinks is not held to the one-token limit while it does (Ollama
+    /// counts only the answer), and a bare "." set one reasoning about what
+    /// was meant for some 20 seconds — the load time this is meant to hide.
+    ///
+    /// Only for an endpoint that looks self-hosted (see `shouldPreload`): a
+    /// cloud service has nothing to load, and the request would be a billed,
+    /// rate-limited completion for nothing on every session start.
+    ///
+    /// A refusal of `reasoning_effort` gets the same fallback as a
+    /// translation: the parameter is dropped for the session and the
+    /// request sent once more. Without that, a server that validates a
+    /// request before loading anything would refuse the preload, load
+    /// nothing, and hand the first utterance the whole wait — and then
+    /// refuse that utterance's first attempt too.
+    func preload() {
+        guard let endpoint, Self.shouldPreload(host: endpoint.host(), apiKey: apiKey) else { return }
+        Task.detached { [self] in
+            let started = Date()
+            var includeEffort = shouldSendReasoningEffort()
+            for _ in 0..<2 {
+                let body = Self.preloadBody(
+                    model: model, systemPrompt: systemPrompt, includeEffort: includeEffort)
+                var request = URLRequest(url: endpoint, timeoutInterval: 180)
+                request.httpMethod = "POST"
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                if let apiKey {
+                    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+                }
+                guard let payload = try? JSONSerialization.data(withJSONObject: body) else { return }
+                request.httpBody = payload
+                do {
+                    let (data, response) = try await URLSession.shared.data(for: request)
+                    let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                    let detail = String(decoding: data.prefix(400), as: UTF8.self)
+                    if code == 200 {
+                        debugLog("preloaded \(model) in \(String(format: "%.1f", Date().timeIntervalSince(started)))s")
+                        return
+                    }
+                    if includeEffort, code == 400 || code == 422, detail.contains("reasoning_effort") {
+                        debugLog("endpoint refused reasoning_effort on preload (HTTP \(code)); retrying without it")
+                        disableReasoningEffort()
+                        includeEffort = false
+                        continue
+                    }
+                    debugLog("preload of \(model) answered HTTP \(code): \(detail.prefix(200))")
+                } catch {
+                    debugLog("preload of \(model) failed: \(error)")
+                }
+                return
+            }
+        }
+    }
+
+    /// The preload request: the system prompt, so the server's cache holds
+    /// its prefix for the first real request, and the smallest user turn
+    /// and answer that a chat completion can be made of.
+    static func preloadBody(model: String, systemPrompt: String, includeEffort: Bool) -> [String: Any] {
+        var body: [String: Any] = [
+            "model": model,
+            "max_completion_tokens": 1,
+            "messages": [
+                ["role": "system", "content": systemPrompt],
+                ["role": "user", "content": "."],
+            ],
+        ]
+        if includeEffort {
+            body["reasoning_effort"] = "none"
+        }
+        return body
+    }
+
+    /// Whether an endpoint is one a preload can help: a server this machine
+    /// or its network runs, which loads the model on first use.
+    ///
+    /// Judged by the host, and failing that by the key. A loopback, private
+    /// or link-local address, or a `.local` name, is a machine within reach
+    /// and never a metered service. Anything else is taken for self-hosted
+    /// only when no API key is set: the servers this connects to without a
+    /// key are the local ones, and a keyed endpoint on a public host is
+    /// presumed to bill per request — a self-hosted server that happens to
+    /// sit behind a key on a public name forgoes the preload, which costs
+    /// it the first utterance's wait and nothing more.
+    static func shouldPreload(host: String?, apiKey: String?) -> Bool {
+        if let host, hostIsPrivate(host) { return true }
+        return apiKey == nil || apiKey?.isEmpty == true
+    }
+
+    /// Whether a host names this machine or one on its own network.
+    static func hostIsPrivate(_ host: String) -> Bool {
+        let name = host.lowercased()
+        if name == "localhost" || name.hasSuffix(".local") || name.hasSuffix(".localhost") {
+            return true
+        }
+        // IPv6: loopback, unique local (fc00::/7), link local (fe80::/10).
+        if name.contains(":") {
+            let bare = name.trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
+            return bare == "::1" || bare.hasPrefix("fc") || bare.hasPrefix("fd")
+                || bare.hasPrefix("fe8") || bare.hasPrefix("fe9")
+                || bare.hasPrefix("fea") || bare.hasPrefix("feb")
+        }
+        // IPv4: loopback, 10/8, 172.16/12, 192.168/16, 169.254/16. All four
+        // labels must be numbers — a name such as api.10.0.0.1.example.com
+        // has four that are, and is not an address.
+        let labels = name.split(separator: ".", omittingEmptySubsequences: false)
+        let octets = labels.compactMap { UInt8($0) }
+        guard labels.count == 4, octets.count == 4 else { return false }
+        switch (octets[0], octets[1]) {
+        case (127, _), (10, _), (192, 168), (169, 254): return true
+        case (172, let second) where (16...31).contains(second): return true
+        default: return false
+        }
+    }
+
     /// One /chat/completions round trip, shared by translate and
     /// translateEphemeral. Validates the response (an empty translation is a
     /// failure) but never touches the history.
-    private func performChat(messages: [[String: String]]) async throws -> String {
+    ///
+    /// Streamed when a partial-text consumer is given, whole otherwise. The
+    /// server's work is the same either way; what changes is when the first
+    /// characters can be shown. Measured on the setup above, a translation
+    /// took 1.4–1.7s at the median (2.5–3.4s at p90), of which 0.6–0.8s is
+    /// prompt evaluation before the first token — so a streamed answer is on
+    /// the panel roughly a second before a whole one would be.
+    private func performChat(
+        messages: [[String: String]],
+        onPartial: (@Sendable (String) -> Void)? = nil
+    ) async throws -> String {
         guard let endpoint else {
             markDead()
             throw OpenAICompatError.badURL
         }
         let includeEffort = shouldSendReasoningEffort()
+        let streamed = onPartial != nil && shouldSendStream()
 
         var body: [String: Any] = [
             "model": model,
@@ -593,6 +774,9 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         ]
         if includeEffort {
             body["reasoning_effort"] = "none"
+        }
+        if streamed {
+            body["stream"] = true
         }
 
         var request = URLRequest(url: endpoint, timeoutInterval: 60)
@@ -603,10 +787,18 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        // The status line arrives before any of the body on both paths, so
+        // the reasoning_effort fallback below reads the same whether the
+        // answer is going to be streamed or not.
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
         guard let http = response as? HTTPURLResponse else { throw OpenAICompatError.badResponse }
         guard http.statusCode == 200 else {
-            let detail = String(decoding: data.prefix(400), as: UTF8.self)
+            var data = Data()
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count >= 400 { break }
+            }
+            let detail = String(decoding: data, as: UTF8.self)
             // Fallback for servers that reject reasoning_effort (retry once).
             //
             // 422 as well as 400: the parameter now goes to every endpoint, and
@@ -620,23 +812,147 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
             // nothing to do with this field; retrying those without it would
             // hide the real complaint behind a second identical failure.
             if includeEffort,
-               http.statusCode == 400 || http.statusCode == 422,
-               detail.contains("reasoning_effort") {
+               Self.refuses(field: "reasoning_effort", status: http.statusCode, body: detail) {
                 debugLog("endpoint refused reasoning_effort (HTTP \(http.statusCode)); retrying without it")
                 disableReasoningEffort()
-                return try await performChat(messages: messages)
+                return try await performChat(messages: messages, onPartial: onPartial)
+            }
+            // The same for `stream`: an endpoint that has the ordinary
+            // completion but not the streamed one would otherwise fail
+            // every translation the same way, and the lane would give up
+            // after three.
+            if streamed,
+               Self.refuses(field: "stream", status: http.statusCode, body: detail) {
+                debugLog("endpoint refused streaming (HTTP \(http.statusCode)); translating without it from here on")
+                disableStream()
+                return try await performChat(messages: messages, onPartial: onPartial)
             }
             throw OpenAICompatError.httpError(http.statusCode, detail)
         }
-        guard let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = payload["choices"] as? [[String: Any]],
-              let message = choices.first?["message"] as? [String: Any],
-              let content = message["content"] as? String else {
-            throw OpenAICompatError.badResponse
+
+        // Read by what came back, not by what was asked for: an endpoint
+        // that does not stream may ignore `stream` and answer with the
+        // whole completion as JSON, and read as an event stream that body
+        // has no events in it — every translation would fail and the lane
+        // would shut itself down after three.
+        let content: String
+        if let onPartial, Self.isEventStream(contentType: http.value(forHTTPHeaderField: "Content-Type")) {
+            content = try await Self.collectStreamedAnswer(lines: bytes.lines, onPartial: onPartial)
+        } else {
+            var data = Data()
+            for try await byte in bytes { data.append(byte) }
+            content = try Self.answerText(fromCompletion: data)
         }
         let result = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !result.isEmpty else { throw OpenAICompatError.emptyResponse }
         return result
+    }
+
+    /// Whether a response body is a server-sent event stream. The media
+    /// type may carry parameters (`text/event-stream; charset=utf-8`).
+    static func isEventStream(contentType: String?) -> Bool {
+        guard let contentType else { return false }
+        return contentType.lowercased()
+            .split(separator: ";", maxSplits: 1)[0]
+            .trimmingCharacters(in: .whitespaces) == "text/event-stream"
+    }
+
+    /// The assistant's text from a whole (non-streamed) chat completion.
+    static func answerText(fromCompletion data: Data) throws -> String {
+        guard let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = payload["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let text = message["content"] as? String else {
+            throw OpenAICompatError.badResponse
+        }
+        return text
+    }
+
+    /// Assembles a streamed answer from the lines of its event stream,
+    /// handing the text so far to `onPartial` as it grows.
+    ///
+    /// The answer counts only once the server has said it is complete —
+    /// the `[DONE]` sentinel, or a chunk carrying a finish reason. A stream
+    /// that simply ends before either (a proxy or the server closing the
+    /// connection mid-answer) is a failed request: what arrived is the front
+    /// of a translation, and taken for the whole it would be recorded in
+    /// the history and shown as settled, with no retry to replace it.
+    ///
+    /// Either signal ends the reading then and there. A server that marks
+    /// the finish but keeps the connection open would otherwise hold a
+    /// complete answer back until the timeout, and whatever follows the
+    /// finish (a usage chunk, the sentinel) has nothing more to add.
+    static func collectStreamedAnswer<Lines: AsyncSequence>(
+        lines: Lines, onPartial: @Sendable (String) -> Void
+    ) async throws -> String where Lines.Element == String {
+        var accumulated = ""
+        var completed = false
+        events: for try await line in lines {
+            guard let event = streamEvent(fromSSELine: line) else { continue }
+            switch event {
+            case .done:
+                completed = true
+                break events
+            case .error(let message):
+                throw OpenAICompatError.streamError(message)
+            case .delta(let piece, let finished):
+                if !piece.isEmpty {
+                    accumulated += piece
+                    onPartial(accumulated)
+                }
+                if finished {
+                    completed = true
+                    break events
+                }
+            }
+        }
+        guard completed else { throw OpenAICompatError.streamTruncated }
+        return accumulated
+    }
+
+    /// One server-sent event of a streamed completion.
+    enum StreamEvent: Equatable {
+        /// More of the answer, and whether this chunk carries a finish
+        /// reason. Empty pieces are reported as such, not dropped: a
+        /// role-only first chunk is one, and it is not a malformed line;
+        /// the last chunk is often another, and its finish reason is what
+        /// says the answer is whole.
+        case delta(String, finished: Bool)
+        /// The `[DONE]` sentinel.
+        case done
+        /// An error object in place of a chunk, which servers send when
+        /// generation fails after the 200 has gone out.
+        case error(String)
+    }
+
+    /// Reads one line of a text/event-stream body, or nil for a line that
+    /// carries no event: blank separators, comments, and any field other
+    /// than `data` (an `event:` or `id:` line has nothing for us).
+    ///
+    /// The `data:` prefix is matched with or without the space after the
+    /// colon — the specification allows both — and a chunk that does not
+    /// parse is nil rather than an error, so one odd line from a server
+    /// cannot fail an answer that is otherwise arriving.
+    static func streamEvent(fromSSELine line: String) -> StreamEvent? {
+        guard line.hasPrefix("data:") else { return nil }
+        let payload = line.dropFirst("data:".count).trimmingCharacters(in: .whitespaces)
+        if payload == "[DONE]" { return .done }
+        guard let object = try? JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any] else {
+            return nil
+        }
+        if let error = object["error"] {
+            if let error = error as? [String: Any], let message = error["message"] as? String {
+                return .error(message)
+            }
+            return .error(String(describing: error))
+        }
+        guard let choices = object["choices"] as? [[String: Any]],
+              let choice = choices.first,
+              let delta = choice["delta"] as? [String: Any] else {
+            return nil
+        }
+        let finished = (choice["finish_reason"] as? String).map { !$0.isEmpty } ?? false
+        return .delta(delta["content"] as? String ?? "", finished: finished)
     }
 
     func shutdown() {

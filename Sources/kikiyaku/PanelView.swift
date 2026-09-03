@@ -528,8 +528,8 @@ private struct HistoryContent: View {
                 // (same treatment as history rows).
                 let awaitingFinal =
                     lingering.translationState(translating: state.translationReady) == .pending
-                if let provisional = lingering.provisionalTranslation {
-                    Text(provisional)
+                if let interim = lingering.interimTranslation {
+                    Text(interim)
                         .font(.system(size: state.fontSize))
                         .multilineTextAlignment(.leading)
                         // Dimmed while the final is still due — with the
@@ -544,7 +544,7 @@ private struct HistoryContent: View {
                 } else if awaitingFinal {
                     SkeletonLine(fontSize: state.fontSize)
                 }
-                if !awaitingFinal, lingering.provisionalTranslation != nil {
+                if !awaitingFinal, lingering.interimTranslation != nil {
                     Text(L("panel.provisionalKept"))
                         .font(.system(size: max(8, state.fontSize * 0.6)))
                         .foregroundStyle(.tertiary)
@@ -869,6 +869,15 @@ private struct BilingualContent: View {
                             utterance: utterance,
                             fontSize: state.fontSize,
                             selectable: state.sourceTextVisible)
+                    } else if let partial = utterance.partialTranslation {
+                        // The final as far as it has streamed in. This
+                        // layout has no provisional lane, so a partial is
+                        // the only interim text a row can have.
+                        Text(partial)
+                            .font(.system(size: state.fontSize))
+                            .foregroundStyle(.secondary)
+                            .selectable(state.sourceTextVisible)
+                            .liveRail(true)
                     } else if utterance.finalTranslationFailed {
                         Text(L("translation.failed"))
                             .font(.system(size: max(8, state.fontSize * 0.72)))
@@ -957,16 +966,17 @@ private struct UtteranceRow: View {
             }
             if utterance.translation != nil {
                 TranslationText(utterance: utterance, fontSize: fontSize, selectable: selectable)
-            } else if let provisional = utterance.provisionalTranslation {
-                // Provisional translation carried over at finalize. Dimmed
-                // either way — it is not the final wording — and marked live
-                // by the rail only while a final is still due. Once none is
-                // coming (this row failed, or the lane stopped), the rail goes
-                // and a label says so explicitly, since colour alone would
-                // leave it looking like a settled translation.
+            } else if let interim = utterance.interimTranslation {
+                // The final as far as it has streamed in, else the
+                // provisional carried over at finalize. Dimmed either way —
+                // it is not the settled wording — and marked live by the
+                // rail only while a final is still due. Once none is coming
+                // (this row failed, or the lane stopped), the rail goes and
+                // a label says so explicitly, since colour alone would leave
+                // it looking like a settled translation.
                 let awaitingFinal =
                     utterance.translationState(translating: showsPending) == .pending
-                Text(provisional)
+                Text(interim)
                     .font(.system(size: fontSize))
                     .foregroundStyle(.secondary)
                     .selectable(selectable)

@@ -19,6 +19,23 @@ struct Utterance: Identifiable, Sendable {
     /// utterance finalized. Shown (in the pale style) until the final
     /// translation replaces it. Transient — never saved to the JSONL.
     var provisionalTranslation: String? = nil
+    /// The final translation as far as it has streamed in. Shown in the
+    /// provisional style until the whole answer lands in `translation`, and
+    /// cleared when the attempt fails so the carried-over provisional, if
+    /// any, shows again. Transient — never saved to the JSONL.
+    var partialTranslation: String? = nil
+    /// Which attempt at the final translation `partialTranslation` belongs
+    /// to. Partial text arrives on the main actor as separate tasks whose
+    /// order relative to the attempt's failure cleanup is not guaranteed,
+    /// so each piece names its attempt and only the current one is
+    /// accepted: a late piece from a failed attempt can neither repopulate
+    /// the cleared row nor overwrite the attempt that replaced it.
+    var translationAttempt = 0
+    /// Position of `partialTranslation` within its attempt. Two pieces of
+    /// one attempt are not ordered against each other either, and each is
+    /// the whole answer so far — so an older piece landing after a newer
+    /// one would put a shorter text back. Only a later position is taken.
+    var partialSequence = 0
     /// The final translation failed permanently (retries exhausted). The UI
     /// stops the spinner and shows either the carried-over provisional
     /// translation or a failure label; the saved JSONL records this flag
@@ -38,6 +55,45 @@ struct Utterance: Identifiable, Sendable {
     /// Drives the slide-in effect at the moment the translation arrives.
     var isLLMTranslation: Bool {
         translationEngine != nil
+    }
+
+    /// What stands in for the translation while none is settled: the part
+    /// of the final that has arrived, else the provisional carried over at
+    /// finalize. The streamed part wins once it exists — it is the final's
+    /// own wording, and the provisional was only ever holding its place.
+    var interimTranslation: String? {
+        partialTranslation ?? provisionalTranslation
+    }
+
+    /// Opens a new attempt at the final translation and returns its number;
+    /// only partial text carrying that number is shown from here on.
+    mutating func beginTranslationAttempt() -> Int {
+        translationAttempt += 1
+        partialTranslation = nil
+        partialSequence = 0
+        return translationAttempt
+    }
+
+    /// Takes streamed partial text for the attempt it belongs to, at the
+    /// position it holds in that attempt (counted from 1). Ignored for any
+    /// other attempt, for a position at or before the one shown, once the
+    /// row has its translation (a chunk delivered late must not reopen a
+    /// settled row), and when there is nothing to show yet, so a row is
+    /// never put into the interim style over an empty string.
+    mutating func applyPartialTranslation(_ text: String, attempt: Int, sequence: Int) {
+        guard attempt == translationAttempt, sequence > partialSequence,
+              translation == nil else { return }
+        partialSequence = sequence
+        guard !text.isEmpty else { return }
+        partialTranslation = text
+    }
+
+    /// Closes the current attempt without a translation: what had streamed
+    /// in is not one and comes down, and anything of it still on its way
+    /// is refused.
+    mutating func endTranslationAttempt() {
+        translationAttempt += 1
+        partialTranslation = nil
     }
 }
 
@@ -328,6 +384,29 @@ final class AppState {
         guard let index = utterances.firstIndex(where: { $0.id == id }) else { return }
         utterances[index].translation = text
         utterances[index].translationEngine = engine
+        utterances[index].partialTranslation = nil
+    }
+
+    /// Called before each attempt at a streamed final translation. The
+    /// number it returns travels with that attempt's partial text; nil when
+    /// the row is gone.
+    func beginLLMTranslationAttempt(id: UUID) -> Int? {
+        guard let index = utterances.firstIndex(where: { $0.id == id }) else { return nil }
+        return utterances[index].beginTranslationAttempt()
+    }
+
+    /// Called as a streamed final translation grows.
+    func setLLMTranslationPartial(id: UUID, attempt: Int, sequence: Int, text: String) {
+        guard let index = utterances.firstIndex(where: { $0.id == id }) else { return }
+        utterances[index].applyPartialTranslation(text, attempt: attempt, sequence: sequence)
+    }
+
+    /// Called when an attempt at a streamed final translation fails before
+    /// completing. What had arrived is not the translation and would only
+    /// be mistaken for one; the next attempt starts from nothing.
+    func endLLMTranslationAttempt(id: UUID) {
+        guard let index = utterances.firstIndex(where: { $0.id == id }) else { return }
+        utterances[index].endTranslationAttempt()
     }
 
     /// Called when LLM translation failed even after retries. Marks the row as
@@ -340,5 +419,6 @@ final class AppState {
         guard let index = utterances.firstIndex(where: { $0.id == id }) else { return }
         guard utterances[index].translation == nil else { return }
         utterances[index].finalTranslationFailed = true
+        utterances[index].partialTranslation = nil
     }
 }
