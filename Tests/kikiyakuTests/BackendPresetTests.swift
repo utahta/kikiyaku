@@ -17,6 +17,7 @@ struct BackendPresetTests {
         p.openAIModel = "old-model"
         p.claudeModel = "claude-opus-5"
         p.provisionalTranslation = false
+        p.glossary = "deadline = 締め切り"
         return p
     }
 
@@ -26,6 +27,7 @@ struct BackendPresetTests {
             && after.sourceLocaleID == before.sourceLocaleID
             && after.targetLocaleID == before.targetLocaleID
             && after.provisionalTranslation == before.provisionalTranslation
+            && after.glossary == before.glossary
     }
 
     @Test func openAIFillsTheThreeConnectionFields() {
@@ -45,11 +47,13 @@ struct BackendPresetTests {
         BackendPreset.lmStudio.apply(to: &lmStudio)
         #expect(lmStudio.openAIBaseURL == "http://localhost:1234")
         #expect(lmStudio.openAIModel.isEmpty)
+        #expect(untouched(lmStudio, draft()))
 
         var ollama = draft()
         BackendPreset.ollama.apply(to: &ollama)
         #expect(ollama.openAIBaseURL == "http://localhost:11434")
         #expect(ollama.openAIModel.isEmpty)
+        #expect(untouched(ollama, draft()))
     }
 
     /// The Claude preset touches the backend and the Claude model alone; the

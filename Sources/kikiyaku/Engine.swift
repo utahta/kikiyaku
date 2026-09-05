@@ -455,7 +455,9 @@ final class Engine {
         // mid-start would pair a new executable with this snapshot's model
         // and prompt. Only for the backend that uses it (a few stat() calls).
         let claudeBinary = backend == "claude" ? ClaudeBinary.resolve() : nil
-        let promptTemplate = Preferences.claudePromptOverride ?? ClaudeSession.defaultPromptTemplate
+        let prompt = TranslationPrompt.build(
+            template: Preferences.claudePromptOverride ?? ClaudeSession.defaultPromptTemplate,
+            glossary: Preferences.glossary)
         let provisionalPreference = Preferences.provisionalTranslationEnabled
         // One hostTime→Date basis for the whole session (see SessionClock),
         // taken before any capture so every buffer's hostTime maps against it.
@@ -521,10 +523,6 @@ final class Engine {
             var llmFactory: (@Sendable () throws -> any LLMTranslator)?
             var llmName = ""
             if translationEnabled && !sameLanguage {
-                // The prompt is direction-free (the per-message <u> tag
-                // attributes carry the direction), so the template is used
-                // verbatim — no placeholder substitution.
-                let prompt = promptTemplate
                 if backend == "openai" {
                     // Use only the key bound to this endpoint host (prevents the
                     // OpenAI key from being sent to a different host such as a

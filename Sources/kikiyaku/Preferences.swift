@@ -70,6 +70,12 @@ enum Preferences {
     private static let openAIBaseURLKey = "openAIBaseURL"
     private static let openAIModelKey = "openAIModel"
     private static let claudeModelKey = "claudeModel"
+    private static let glossaryKey = "glossary"
+
+    static var glossary: String {
+        get { UserDefaults.standard.string(forKey: glossaryKey) ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: glossaryKey) }
+    }
 
     private static let provisionalKey = "provisionalTranslation"
 

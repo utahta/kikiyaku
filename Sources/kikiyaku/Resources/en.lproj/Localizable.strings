@@ -116,7 +116,12 @@
 "settings.profiles.notSelectedCaption" = "This profile is no longer the selected one; the changes cannot be saved.";
 "settings.cancel" = "Cancel";
 "settings.ok" = "OK";
-"settings.profilesCaption" = "A profile holds the session settings shown below — mode, audio input, languages, backend, endpoint and models. Edit… opens the selected profile for editing; New… starts a fresh one (presets available). Switch profiles here or from the menu bar icon; Delete… is in the profile menu. API keys are not part of a profile: they are stored in the Keychain per endpoint. Display settings are shared by all profiles.";
+"settings.profilesCaption" = "A profile holds the session settings shown below — mode, audio input, languages, backend, endpoint, models and glossary. Edit… opens the selected profile for editing; New… starts a fresh one (presets available). Switch profiles here or from the menu bar icon; Delete… is in the profile menu. API keys are not part of a profile: they are stored in the Keychain per endpoint. Display settings are shared by all profiles.";
+"settings.glossary" = "Glossary";
+"settings.glossaryFormat" = "One entry per line: term = translation";
+"settings.glossaryResize" = "Drag up or down to resize the text field";
+"settings.glossaryPlaceholder" = "締め切り = deadline\nニューヨーク = New York";
+"settings.glossaryCaption" = "Term mappings for names and technical terms, saved in this profile and used in either translation direction. Leave empty to use no glossary. Takes effect the next time you start, including with a custom system prompt.";
 "settings.presets" = "Preset";
 "settings.presets.pick" = "Choose…";
 "settings.presetsCaption" = "Fills in the backend, endpoint and model for a common setup. Everything else — name, mode, languages — is left as it is. Local servers get no model: pick one with Fetch once the server is running.";
