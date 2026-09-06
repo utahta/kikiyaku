@@ -207,21 +207,43 @@ struct OpenAICompatTests {
         }
     }
 
-    // MARK: preloadBody(model:systemPrompt:includeEffort:)
+    // MARK: request bodies
 
-    /// One token, the system prompt in front, and the reasoning parameter
-    /// only while the session still sends it.
     @Test func thePreloadAsksForOneTokenBehindTheSystemPrompt() {
-        let body = OpenAICompatSession.preloadBody(model: "m", systemPrompt: "sys", includeEffort: true)
+        let body = OpenAICompatSession.preloadBody(
+            model: "m", systemPrompt: "sys", fields: Set(OpenAICompatSession.ChatField.allCases))
         #expect(body["model"] as? String == "m")
         #expect(body["max_completion_tokens"] as? Int == 1)
         #expect(body["reasoning_effort"] as? String == "none")
+        #expect(body["temperature"] as? Int == 0)
+        #expect(body["stream"] == nil)
         let messages = body["messages"] as? [[String: String]]
         #expect(messages?.first == ["role": "system", "content": "sys"])
+        #expect(messages?.last == ["role": "user", "content": "."])
         #expect(messages?.count == 2)
 
-        let plain = OpenAICompatSession.preloadBody(model: "m", systemPrompt: "sys", includeEffort: false)
+        let plain = OpenAICompatSession.preloadBody(model: "m", systemPrompt: "sys", fields: [])
         #expect(plain["reasoning_effort"] == nil)
+        #expect(plain["temperature"] == nil)
+        #expect(plain["stream"] == nil)
+    }
+
+    @Test func chatBodiesIncludeOnlyTheRequestedOptionalFields() {
+        let all = OpenAICompatSession.ChatField.allCases
+        let messages = [["role": "system", "content": "sys"], ["role": "user", "content": "hello"]]
+        for mask in 0..<8 {
+            let fields = Set(all.enumerated().compactMap { index, field in
+                mask & (1 << index) != 0 ? field : nil
+            })
+            let body = OpenAICompatSession.chatBody(
+                model: "m", messages: messages, maxCompletionTokens: 2000, fields: fields)
+            #expect(body["model"] as? String == "m")
+            #expect(body["messages"] as? [[String: String]] == messages)
+            #expect(body["max_completion_tokens"] as? Int == 2000)
+            #expect(body["reasoning_effort"] as? String == (fields.contains(.reasoningEffort) ? "none" : nil))
+            #expect(body["temperature"] as? Int == (fields.contains(.temperature) ? 0 : nil))
+            #expect(body["stream"] as? Bool == (fields.contains(.stream) ? true : nil))
+        }
     }
 
     // MARK: refuses(field:status:body:)
@@ -233,6 +255,110 @@ struct OpenAICompatTests {
         #expect(OpenAICompatSession.refuses(field: "reasoning_effort", status: 422, body: "extra field reasoning_effort"))
         #expect(!OpenAICompatSession.refuses(field: "stream", status: 500, body: "stream failed"))
         #expect(!OpenAICompatSession.refuses(field: "stream", status: 400, body: "model not found"))
+    }
+
+    @Test func refusalsMatchQuotedNamesAndValidationPaths() {
+        for status in [400, 422] {
+            for body in ["temperature", "Unsupported parameter: 'temperature'.",
+                         #"{"loc":["body","temperature"],"msg":"Extra inputs are not permitted"}"#,
+                         "Only the default value of temperature is supported."] {
+                #expect(OpenAICompatSession.refuses(field: "temperature", status: status, body: body))
+            }
+        }
+    }
+
+    @Test func similarlyNamedFieldsAreNotRefusals() {
+        for field in OpenAICompatSession.ChatField.allCases {
+            for name in ["\(field.rawValue)_options", "other_\(field.rawValue)",
+                         "\(field.rawValue)2", "up\(field.rawValue)"] {
+                #expect(!OpenAICompatSession.refuses(field: field.rawValue, status: 400, body: "Unsupported: \(name)"))
+            }
+        }
+    }
+
+    @Test func aRefusalCanAppearBeyondTheLogExcerpt() {
+        let body = String(repeating: "validation detail; ", count: 40) + "Unsupported parameter: temperature"
+        #expect(body.utf8.count > 400)
+        #expect(OpenAICompatSession.refusedField(
+            in: Set(OpenAICompatSession.ChatField.allCases), status: 422, body: body) == .temperature)
+    }
+
+    @Test func echoedRequestKeysDoNotIdentifyTheRefusedField() {
+        let input = #"{"reasoning_effort": "none", "temperature" : 0, "stream": true}"#
+        let all = Set(OpenAICompatSession.ChatField.allCases)
+        let unrelated = #"{"detail":[{"loc":["body","max_completion_tokens"],"msg":"Extra inputs are not permitted","input":\#(input)}]}"#
+        #expect(OpenAICompatSession.refusedField(in: all, status: 422, body: unrelated) == nil)
+        for field in OpenAICompatSession.ChatField.allCases {
+            let detail = #"{"detail":[{"loc":["body","\#(field.rawValue)"],"msg":"Extra inputs are not permitted","input":\#(input)}]}"#
+            #expect(OpenAICompatSession.refusedField(in: all, status: 422, body: detail) == field)
+        }
+    }
+
+    @Test func unrelatedErrorsAndUnsentFieldsDoNotTriggerRetries() {
+        let all = Set(OpenAICompatSession.ChatField.allCases)
+        for status in [200, 401, 403, 404, 429, 500, 503] {
+            #expect(OpenAICompatSession.refusedField(in: all, status: status, body: "temperature") == nil)
+        }
+        #expect(OpenAICompatSession.refusedField(in: all, status: 400, body: "model not found") == nil)
+        #expect(OpenAICompatSession.refusedField(in: all, status: 422, body: "stream_options") == nil)
+        #expect(OpenAICompatSession.refusedField(
+            in: [.reasoningEffort, .temperature], status: 400, body: "stream is unsupported") == nil)
+        #expect(OpenAICompatSession.refusedField(in: [], status: 400, body: "temperature") == nil)
+    }
+
+    @Test func threeRefusalsAllowAtMostFourRequestsInAnyOrder() throws {
+        typealias Field = OpenAICompatSession.ChatField
+        let orders: [[Field]] = [
+            [.reasoningEffort, .temperature, .stream], [.reasoningEffort, .stream, .temperature],
+            [.temperature, .reasoningEffort, .stream], [.temperature, .stream, .reasoningEffort],
+            [.stream, .reasoningEffort, .temperature], [.stream, .temperature, .reasoningEffort],
+        ]
+        for order in orders {
+            var fields = Set(Field.allCases)
+            var requests = 1
+            for rejected in order {
+                let field = try #require(OpenAICompatSession.refusedField(
+                    in: fields, status: 400, body: "Unsupported parameter: \(rejected.rawValue)"))
+                #expect(field == rejected)
+                fields.remove(field)
+                requests += 1
+                let body = OpenAICompatSession.chatBody(model: "m", messages: [], maxCompletionTokens: 2000, fields: fields)
+                #expect(body[rejected.rawValue] == nil)
+                #expect(OpenAICompatSession.refusedField(in: fields, status: 422, body: rejected.rawValue) == nil)
+            }
+            #expect(requests == 4)
+            #expect(fields.isEmpty)
+        }
+    }
+
+    @Test func aResponseNamingAllFieldsDisablesThemInAFixedOrder() throws {
+        var fields = Set(OpenAICompatSession.ChatField.allCases)
+        let detail = "Unsupported: stream, temperature, reasoning_effort"
+        for expected in OpenAICompatSession.ChatField.allCases {
+            let rejected = try #require(OpenAICompatSession.refusedField(in: fields, status: 422, body: detail))
+            #expect(rejected == expected)
+            fields.remove(rejected)
+        }
+        #expect(OpenAICompatSession.refusedField(in: fields, status: 422, body: detail) == nil)
+    }
+
+    @Test func preloadRefusalsAllowAtMostThreeRequests() throws {
+        typealias Field = OpenAICompatSession.ChatField
+        let orders: [[Field]] = [[.reasoningEffort, .temperature], [.temperature, .reasoningEffort]]
+        for order in orders {
+            var fields: Set<Field> = [.reasoningEffort, .temperature]
+            var requests = 1
+            for rejected in order {
+                let field = try #require(OpenAICompatSession.refusedField(in: fields, status: 422, body: rejected.rawValue))
+                fields.remove(field)
+                requests += 1
+                let body = OpenAICompatSession.preloadBody(model: "m", systemPrompt: "sys", fields: fields)
+                #expect(body[rejected.rawValue] == nil)
+                #expect(body["stream"] == nil)
+            }
+            #expect(requests == 3)
+            #expect(fields.isEmpty)
+        }
     }
 
     // MARK: isEventStream(contentType:) / answerText(fromCompletion:)

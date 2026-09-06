@@ -67,7 +67,7 @@ enum OpenAICompatError: Error, CustomStringConvertible {
 ///
 /// `translate` is called serially from a single Task (the LLM lane's
 /// discipline). `translateEphemeral` (the provisional lane) may run
-/// concurrently with it — the shared mutable state (history, effort flag) is
+/// concurrently with it — the shared mutable state (history, optional fields) is
 /// guarded by `stateLock`.
 final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     private let endpoint: URL?
@@ -87,29 +87,14 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     /// answer ever came. Guarded by stateLock.
     private var contextProbes = 0
     private var contextAdapted = false
-    /// Whether to ask for no reasoning. Sent to every endpoint until one
-    /// refuses it, which the 400 fallback below then remembers.
-    ///
-    /// Reasoning is time spent not translating, and a model left to it spends a
-    /// great deal: 355–766 tokens of reasoning for a sentence whose translation
-    /// is 16, taking 6.2–11.9s instead of 0.6s. Asking for none brings that
-    /// back whether the server's own thinking setting is on or off, and costs
-    /// nothing when it was already off. Measured on gemma4 26B through both
-    /// Ollama and LM Studio, with the real prompt and 20 utterances of history.
-    ///
-    /// An earlier note here had it that local servers read this parameter as
-    /// "enable thinking" and became ten times slower, so it went to
-    /// api.openai.com alone. The measurement behind that had the cause the
-    /// wrong way round — those seconds were the model thinking, which the
-    /// parameter is what turns off — and Ollama, where thinking is on unless
-    /// asked otherwise, was left doing it on every utterance.
-    private var sendReasoningEffort = true
-    /// Whether to ask for a streamed answer. Asked of every endpoint until
-    /// one refuses it with a 400/422 naming the field, which is then
-    /// remembered like the reasoning parameter: an endpoint that serves the
-    /// ordinary completion but not the streamed one still translates, only
-    /// without partial text on the way. Guarded by stateLock.
-    private var sendStream = true
+    enum ChatField: String, CaseIterable, Sendable {
+        case reasoningEffort = "reasoning_effort"
+        case temperature
+        case stream
+    }
+
+    /// Refusals persist across both lanes and preload. Guarded by stateLock.
+    private var supportedFields = Set(ChatField.allCases)
     /// Guarded by stateLock: both lanes call performChat concurrently and can
     /// write this (bad-URL path) while the main lane reads isAlive.
     private var alive = true
@@ -566,36 +551,27 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         return Array(history[(end - 2)..<end])
     }
 
-    private func shouldSendReasoningEffort() -> Bool {
+    private func requestFields(streamed: Bool) -> Set<ChatField> {
         stateLock.lock()
         defer { stateLock.unlock() }
-        return sendReasoningEffort
+        return streamed ? supportedFields : supportedFields.subtracting([.stream])
     }
 
-    private func disableReasoningEffort() {
+    private func disableField(_ field: ChatField) {
         stateLock.lock()
-        sendReasoningEffort = false
+        supportedFields.remove(field)
         stateLock.unlock()
     }
 
-    private func shouldSendStream() -> Bool {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-        return sendStream
+    static func refusedField(in fields: Set<ChatField>, status: Int, body: String) -> ChatField? {
+        ChatField.allCases.first { fields.contains($0) && refuses(field: $0.rawValue, status: status, body: body) }
     }
 
-    private func disableStream() {
-        stateLock.lock()
-        sendStream = false
-        stateLock.unlock()
-    }
-
-    /// Whether a failed request was refused over one optional field: a
-    /// 400 or 422 whose body names it. Only then is a retry without the
-    /// field worth making; any other failure retried that way would hide
-    /// the real complaint behind a second identical one.
+    /// Match field names, not longer identifiers or JSON keys in an echoed request.
     static func refuses(field: String, status: Int, body: String) -> Bool {
-        (status == 400 || status == 422) && body.contains(field)
+        guard status == 400 || status == 422 else { return false }
+        let pattern = #"\b"# + NSRegularExpression.escapedPattern(for: field) + #"\b(?!"\s*:)"#
+        return body.range(of: pattern, options: .regularExpression) != nil
     }
 
     private func markDead() {
@@ -633,12 +609,8 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     /// cloud service has nothing to load, and the request would be a billed,
     /// rate-limited completion for nothing on every session start.
     ///
-    /// A refusal of `reasoning_effort` gets the same fallback as a
-    /// translation: the parameter is dropped for the session and the
-    /// request sent once more. Without that, a server that validates a
-    /// request before loading anything would refuse the preload, load
-    /// nothing, and hand the first utterance the whole wait — and then
-    /// refuse that utterance's first attempt too.
+    /// Refused optional fields are dropped as on translation requests, so
+    /// validation errors do not prevent the server from loading the model.
     func preload() {
         guard let endpoint, Self.shouldPreload(host: endpoint.host(), apiKey: apiKey) else { return }
         let timing = TranslationTiming(id: UUID(), kind: .preload, attempt: 1)
@@ -648,10 +620,10 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
             var completionEvent = TranslationTiming.Event.failed
             defer { timing.log(completionEvent, historyPairs: 0) }
             let started = Date()
-            var includeEffort = shouldSendReasoningEffort()
-            for httpAttempt in 1...2 {
+            for httpAttempt in 1...3 {
+                let fields = requestFields(streamed: false)
                 let body = Self.preloadBody(
-                    model: model, systemPrompt: systemPrompt, includeEffort: includeEffort)
+                    model: model, systemPrompt: systemPrompt, fields: fields)
                 var request = URLRequest(url: endpoint, timeoutInterval: 180)
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -670,7 +642,7 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
                     let (data, response) = try await URLSession.shared.data(for: request)
                     let code = (response as? HTTPURLResponse)?.statusCode ?? -1
                     status = code
-                    let detail = String(decoding: data.prefix(400), as: UTF8.self)
+                    let detail = String(decoding: data, as: UTF8.self)
                     if code == 200 {
                         if debugLoggingEnabled, let text = try? Self.answerText(fromCompletion: data), !text.isEmpty {
                             timing.log(.firstText, httpAttempt: httpAttempt, historyPairs: 0, status: code)
@@ -680,10 +652,9 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
                         debugLog("preloaded \(model) in \(String(format: "%.1f", Date().timeIntervalSince(started)))s")
                         return
                     }
-                    if includeEffort, code == 400 || code == 422, detail.contains("reasoning_effort") {
-                        debugLog("endpoint refused reasoning_effort on preload (HTTP \(code)); retrying without it")
-                        disableReasoningEffort()
-                        includeEffort = false
+                    if let field = Self.refusedField(in: fields, status: code, body: detail) {
+                        debugLog("endpoint refused \(field.rawValue) on preload (HTTP \(code)); retrying without it")
+                        disableField(field)
                         httpEvent = .httpRetry
                         continue
                     }
@@ -699,17 +670,30 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     /// The preload request: the system prompt, so the server's cache holds
     /// its prefix for the first real request, and the smallest user turn
     /// and answer that a chat completion can be made of.
-    static func preloadBody(model: String, systemPrompt: String, includeEffort: Bool) -> [String: Any] {
+    static func preloadBody(model: String, systemPrompt: String, fields: Set<ChatField>) -> [String: Any] {
+        chatBody(model: model, messages: [
+            ["role": "system", "content": systemPrompt],
+            ["role": "user", "content": "."],
+        ], maxCompletionTokens: 1, fields: fields.subtracting([.stream]))
+    }
+
+    static func chatBody(
+        model: String, messages: [[String: String]], maxCompletionTokens: Int,
+        fields: Set<ChatField>
+    ) -> [String: Any] {
         var body: [String: Any] = [
             "model": model,
-            "max_completion_tokens": 1,
-            "messages": [
-                ["role": "system", "content": systemPrompt],
-                ["role": "user", "content": "."],
-            ],
+            "max_completion_tokens": maxCompletionTokens,
+            "messages": messages,
         ]
-        if includeEffort {
+        if fields.contains(.reasoningEffort) {
             body["reasoning_effort"] = "none"
+        }
+        if fields.contains(.temperature) {
+            body["temperature"] = 0
+        }
+        if fields.contains(.stream) {
+            body["stream"] = true
         }
         return body
     }
@@ -781,20 +765,9 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
             markDead()
             throw OpenAICompatError.badURL
         }
-        let includeEffort = shouldSendReasoningEffort()
-        let streamed = onPartial != nil && shouldSendStream()
-
-        var body: [String: Any] = [
-            "model": model,
-            "max_completion_tokens": 2000,
-            "messages": messages,
-        ]
-        if includeEffort {
-            body["reasoning_effort"] = "none"
-        }
-        if streamed {
-            body["stream"] = true
-        }
+        let fields = requestFields(streamed: onPartial != nil)
+        let streamed = fields.contains(.stream)
+        let body = Self.chatBody(model: model, messages: messages, maxCompletionTokens: 2000, fields: fields)
 
         var request = URLRequest(url: endpoint, timeoutInterval: 60)
         request.httpMethod = "POST"
@@ -816,55 +789,25 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
             }
         }
 
-        // The status line arrives before any of the body on both paths, so
-        // the reasoning_effort fallback below reads the same whether the
-        // answer is going to be streamed or not.
         timing.log(.httpStart, httpAttempt: httpAttempt, historyPairs: historyPairs, streamed: streamed)
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         guard let http = response as? HTTPURLResponse else { throw OpenAICompatError.badResponse }
         status = http.statusCode
         guard http.statusCode == 200 else {
             var data = Data()
-            for try await byte in bytes {
-                data.append(byte)
-                if data.count >= 400 { break }
-            }
+            for try await byte in bytes { data.append(byte) }
             let detail = String(decoding: data, as: UTF8.self)
-            // Fallback for servers that reject reasoning_effort (retry once).
-            //
-            // 422 as well as 400: the parameter now goes to every endpoint, and
-            // FastAPI-based servers — vLLM among them — answer an unknown field
-            // with 422 rather than 400. Refused there and not caught here, the
-            // request fails, and so does every request after it, since the next
-            // one carries the same parameter.
-            //
-            // Still only when the body names the parameter. A 422 means the
-            // request was malformed, and most of the ways that can happen have
-            // nothing to do with this field; retrying those without it would
-            // hide the real complaint behind a second identical failure.
-            if includeEffort,
-               Self.refuses(field: "reasoning_effort", status: http.statusCode, body: detail) {
-                debugLog("endpoint refused reasoning_effort (HTTP \(http.statusCode)); retrying without it")
-                disableReasoningEffort()
+            // Each retry removes a field that this request actually sent.
+            // The session never re-enables fields, so there are at most three retries.
+            if let field = Self.refusedField(in: fields, status: http.statusCode, body: detail) {
+                debugLog("endpoint refused \(field.rawValue) (HTTP \(http.statusCode)); retrying without it")
+                disableField(field)
                 timing.log(.httpRetry, httpAttempt: httpAttempt, historyPairs: historyPairs, status: status)
                 completionEvent = nil
                 return try await performChat(
                     messages: messages, timing: timing, httpAttempt: httpAttempt + 1, onPartial: onPartial)
             }
-            // The same for `stream`: an endpoint that has the ordinary
-            // completion but not the streamed one would otherwise fail
-            // every translation the same way, and the lane would give up
-            // after three.
-            if streamed,
-               Self.refuses(field: "stream", status: http.statusCode, body: detail) {
-                debugLog("endpoint refused streaming (HTTP \(http.statusCode)); translating without it from here on")
-                disableStream()
-                timing.log(.httpRetry, httpAttempt: httpAttempt, historyPairs: historyPairs, status: status)
-                completionEvent = nil
-                return try await performChat(
-                    messages: messages, timing: timing, httpAttempt: httpAttempt + 1, onPartial: onPartial)
-            }
-            throw OpenAICompatError.httpError(http.statusCode, detail)
+            throw OpenAICompatError.httpError(http.statusCode, String(decoding: data.prefix(400), as: UTF8.self))
         }
 
         // Read by what came back, not by what was asked for: an endpoint
