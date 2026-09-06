@@ -87,7 +87,7 @@ struct SessionProfile: Codable, Identifiable, Hashable, Sendable {
             openAIBaseURL: "",
             openAIModel: "",
             claudeModel: "claude-sonnet-5",
-            provisionalTranslation: true
+            provisionalTranslation: false
         )
     }
 
@@ -495,6 +495,7 @@ final class SessionProfileStore {
     func importMirrorIntoSelected(syncLayout: Bool = true) {
         guard let index = profiles.firstIndex(where: { $0.id == selectedID }) else { return }
         let stored = profiles[index]
+        Preferences.restoreProvisionalTranslationIfUnset(stored.provisionalTranslation)
         let mirrored = SessionProfile.fromPreferences(id: stored.id, name: stored.name)
         guard mirrored != stored else { return }
         profiles[index] = mirrored

@@ -108,6 +108,21 @@ struct SessionProfileTests {
         #expect(blank.glossary.isEmpty)
     }
 
+    @Test func newProfilesStartWithProvisionalTranslationDisabled() {
+        #expect(!SessionProfile.blank().provisionalTranslation)
+        #expect(!SessionProfile.unconfigured().provisionalTranslation)
+    }
+
+    @Test(arguments: [false, true])
+    func savedAndCopiedProfilesKeepTheirProvisionalTranslationChoice(enabled: Bool) throws {
+        var original = profile()
+        original.provisionalTranslation = enabled
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(SessionProfile.self, from: data)
+        #expect(decoded.provisionalTranslation == enabled)
+        #expect(decoded.copy(id: UUID(), name: "copy").provisionalTranslation == enabled)
+    }
+
     @Test func legacyProfilesKeepTheirSettingsWithoutAGlossaryKey() throws {
         let data = Data("""
             [
@@ -143,6 +158,7 @@ struct SessionProfileTests {
         #expect(decoded.count == 2)
         #expect(decoded.allSatisfy { $0.glossary.isEmpty })
         var local = profile(model: "local-model", claudeModel: "claude-model")
+        local.provisionalTranslation = true
         local = local.copy(
             id: try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000001")),
             name: "Local meeting")
