@@ -1,16 +1,16 @@
-# Model measurements — August 2026
+# Model measurements — August–September 2026
 
 These are historical translation measurements, not an end-to-end caption latency benchmark or a ranking of currently available models. For setup instructions, return to the [README](../README.md#translation-backends).
 
 ## Scope and conditions
 
 - Input: 33 utterances from a recorded interview, with recognition errors, translated with conversation history.
-- Measurement: complete translation response time per utterance, non-streaming, with thinking disabled. Values below are means unless otherwise stated.
+- Measurement: complete translation response time per utterance, non-streaming. Reasoning settings differ between test groups. Values below are means unless otherwise stated.
 - Local hardware: Apple Silicon with 64 GB of memory. The original summary does not identify the chip generation or server versions, so the figures are not sufficient to reproduce the exact environment.
 - Local repeatability check: 10 runs of the same 33 utterances through Ollama for Gemma 4. This repeats the same sample; it is not a survey of different languages or conversations.
 - Remote measurements: hosted OpenAI API requests and a persistent Claude CLI process. These include service and network delay at the time of testing.
 
-These results predate the current default of resetting OpenAI-compatible conversation history after 20 completed exchanges while retaining one exchange, and the explicit request for temperature zero. They should not be presented as measurements of the current application settings. Speech recognition delay, waiting for an utterance to finalize, and panel rendering are outside the measurement.
+These results, including the September addition below, predate or bypass the current default of resetting OpenAI-compatible conversation history after 20 completed exchanges while retaining one exchange, and the explicit request for temperature zero. They should not be presented as measurements of the current application settings. Speech recognition delay, waiting for an utterance to finalize, and panel rendering are outside the measurement.
 
 ## Local model
 
@@ -49,6 +49,20 @@ These measurements used a persistent `claude` process, as Kikiyaku does. Separat
 | Haiku 4.5 | 1.0–1.7 s | Faster, but weaker when recognition was poor. |
 
 The CLI handles translation requests serially. These single-request timings do not include the extra queueing that a live conversation can create.
+
+## September 2026 addition: gpt-6-astra (OpenAI API)
+
+Measured on 2026-09-06 with the same 33 utterances as the August OpenAI tests: the full conversation history sent with every request, non-streaming, plain HTTPS from the same Mac, three runs. Requests used `reasoning_effort: low` and omitted `temperature`. Each run included one separate warm-up request, excluded from the timings below: 99 measured requests plus 3 warm-ups. This standalone benchmark does not exercise the application's parameter fallback or history-reset logic.
+
+| Model | Mean per utterance | Other recorded results |
+|---|---|---|
+| gpt-6-astra | 1.99 s | Per-run means: 2.06, 1.88, 2.02 s; median: 1.88 s; p90: 2.62 s; max: 5.40 s across the 3 runs (99 requests). |
+
+- Even at `low`, 12 of the 99 requests spent 7–47 reasoning tokens; those requests took 1.9–3.5 s. The other 87 spent none.
+- The provider's prompt cache took effect from the 13th utterance of each run and served about 79% of the prompt tokens across all three runs.
+- The sales-volume passage was rendered as 1億8,000万本 in all three runs, and the box-office passage as about 1,500億円 with a 200〜300億円 contribution. These outputs have not been verified against the original recording and do not establish correct numerical recovery.
+- Wording varied between runs: only 3 of the 33 utterances had identical translations across all three runs. This test does not establish the cause of that variation.
+- Compared with the August figures for gpt-5.6-terra (1.3 s) and gpt-5.5 (1.5 s), this run was slower. The runs are weeks apart and on a different day's network and service load, so the gap is indicative, not a controlled comparison.
 
 ## What the comparison supports
 
