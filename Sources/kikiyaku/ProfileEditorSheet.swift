@@ -91,6 +91,8 @@ struct ProfileEditorSheet: View {
     private let dismiss: () -> Void
 
     @State private var draft: SessionProfile
+    @State private var glossaryHeight: CGFloat = 80
+    @GestureState private var glossaryResizeTranslation: CGFloat = 0
     // A convenience field only: written to the Keychain for the draft's
     // endpoint on a successful save, never stored inside the profile record.
     @State private var apiKey: String
@@ -510,6 +512,72 @@ struct ProfileEditorSheet: View {
             } label: { HelpLabel(L("settings.claudeModel"), help: L("settings.modelCaption")) }
             .disabled(!translationActive)
         }
+
+        LabeledContent {
+            VStack(alignment: .leading, spacing: 6) {
+                TextEditor(text: $draft.glossary)
+                    .font(.system(size: 12, design: .monospaced))
+                    .contentMargins(.bottom, 18, for: .scrollIndicators)
+                    .frame(height: clampedGlossaryHeight(glossaryHeight + glossaryResizeTranslation))
+                    .autocorrectionDisabled()
+                    .accessibilityLabel(Text(L("settings.glossary")))
+                    .overlay(alignment: .topLeading) {
+                        if draft.glossary.isEmpty {
+                            Text(L("settings.glossaryPlaceholder"))
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundStyle(Color(nsColor: .placeholderTextColor))
+                                .padding(5)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                    }
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
+                    .overlay(alignment: .bottomTrailing) {
+                        glossaryResizeHandle
+                            .padding(2)
+                    }
+                Text(L("settings.glossaryFormat"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(width: 260)
+        } label: { HelpLabel(L("settings.glossary"), help: L("settings.glossaryCaption")) }
+        .disabled(!translationActive)
+    }
+
+    private var glossaryResizeHandle: some View {
+        Path { path in
+            for offset in stride(from: 3, through: 7, by: 4) {
+                path.move(to: CGPoint(x: CGFloat(offset), y: 11))
+                path.addLine(to: CGPoint(x: 11, y: CGFloat(offset)))
+            }
+        }
+            .stroke(.secondary, lineWidth: 1)
+            .frame(width: 14, height: 14)
+            .contentShape(Rectangle())
+            .pointerStyle(translationActive ? .frameResize(position: .bottom) : .default)
+            .help(L("settings.glossaryResize"))
+            .gesture(
+                DragGesture(coordinateSpace: .global)
+                    .updating($glossaryResizeTranslation) { value, translation, _ in
+                        translation = value.translation.height
+                    }
+                    .onEnded { value in
+                        glossaryHeight = clampedGlossaryHeight(glossaryHeight + value.translation.height)
+                    }
+            )
+            .accessibilityLabel(Text(L("settings.glossaryResize")))
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: glossaryHeight = clampedGlossaryHeight(glossaryHeight + 20)
+                case .decrement: glossaryHeight = clampedGlossaryHeight(glossaryHeight - 20)
+                @unknown default: break
+                }
+            }
+    }
+
+    private func clampedGlossaryHeight(_ height: CGFloat) -> CGFloat {
+        min(240, max(80, height))
     }
 
     // MARK: - Actions

@@ -8,6 +8,7 @@ import NaturalLanguage
 /// sequence against a newer revision having been requested while this one was
 /// in flight (superseded results must be discarded, not briefly displayed).
 struct ProvisionalRequest: Sendable {
+    let id = UUID()
     let generation: Int
     let sequence: Int
     let text: String

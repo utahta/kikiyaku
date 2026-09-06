@@ -70,6 +70,12 @@ enum Preferences {
     private static let openAIBaseURLKey = "openAIBaseURL"
     private static let openAIModelKey = "openAIModel"
     private static let claudeModelKey = "claudeModel"
+    private static let glossaryKey = "glossary"
+
+    static var glossary: String {
+        get { UserDefaults.standard.string(forKey: glossaryKey) ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: glossaryKey) }
+    }
 
     private static let provisionalKey = "provisionalTranslation"
 
@@ -78,11 +84,16 @@ enum Preferences {
     /// Effective only with the OpenAI-compatible backend — the pipe-based
     /// Claude CLI session cannot serve the concurrent requests.
     static var provisionalTranslationEnabled: Bool {
-        get {
-            guard UserDefaults.standard.object(forKey: provisionalKey) != nil else { return true }
-            return UserDefaults.standard.bool(forKey: provisionalKey)
-        }
+        get { UserDefaults.standard.bool(forKey: provisionalKey) }
         set { UserDefaults.standard.set(newValue, forKey: provisionalKey) }
+    }
+
+    // Migrated profiles can have a saved value without a mirror key.
+    static func restoreProvisionalTranslationIfUnset(
+        _ enabled: Bool, defaults: UserDefaults = .standard
+    ) {
+        guard defaults.object(forKey: provisionalKey) == nil else { return }
+        defaults.set(enabled, forKey: provisionalKey)
     }
 
     private static let audioSourceKey = "audioSource"

@@ -105,5 +105,90 @@ struct SessionProfileTests {
         let unconfigured = SessionProfile.unconfigured()
         #expect(!unconfigured.name.isEmpty)
         #expect(unconfigured.sameSettings(as: blank))
+        #expect(blank.glossary.isEmpty)
+    }
+
+    @Test func newProfilesStartWithProvisionalTranslationDisabled() {
+        #expect(!SessionProfile.blank().provisionalTranslation)
+        #expect(!SessionProfile.unconfigured().provisionalTranslation)
+    }
+
+    @Test(arguments: [false, true])
+    func savedAndCopiedProfilesKeepTheirProvisionalTranslationChoice(enabled: Bool) throws {
+        var original = profile()
+        original.provisionalTranslation = enabled
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(SessionProfile.self, from: data)
+        #expect(decoded.provisionalTranslation == enabled)
+        #expect(decoded.copy(id: UUID(), name: "copy").provisionalTranslation == enabled)
+    }
+
+    @Test func legacyProfilesKeepTheirSettingsWithoutAGlossaryKey() throws {
+        let data = Data("""
+            [
+                {
+                    "id": "00000000-0000-0000-0000-000000000001",
+                    "name": "Local meeting",
+                    "mode": "translate",
+                    "audioSource": "system",
+                    "sourceLocaleID": "en-US",
+                    "targetLocaleID": "ja-JP",
+                    "backend": "openai",
+                    "openAIBaseURL": "http://localhost:11434",
+                    "openAIModel": "local-model",
+                    "claudeModel": "claude-model",
+                    "provisionalTranslation": true
+                },
+                {
+                    "id": "00000000-0000-0000-0000-000000000002",
+                    "name": "Bilingual meeting",
+                    "mode": "bidirectional",
+                    "audioSource": "both",
+                    "sourceLocaleID": "fr-FR",
+                    "targetLocaleID": "de-DE",
+                    "backend": "claude",
+                    "openAIBaseURL": "",
+                    "openAIModel": "",
+                    "claudeModel": "another-model",
+                    "provisionalTranslation": false
+                }
+            ]
+            """.utf8)
+        let decoded = try JSONDecoder().decode([SessionProfile].self, from: data)
+        #expect(decoded.count == 2)
+        #expect(decoded.allSatisfy { $0.glossary.isEmpty })
+        var local = profile(model: "local-model", claudeModel: "claude-model")
+        local.provisionalTranslation = true
+        local = local.copy(
+            id: try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000001")),
+            name: "Local meeting")
+        var bilingual = profile(
+            mode: .bidirectional, backend: "claude", url: "", model: "",
+            claudeModel: "another-model", source: "fr-FR", target: "de-DE")
+        bilingual.audioSource = "both"
+        bilingual.provisionalTranslation = false
+        bilingual = bilingual.copy(
+            id: try #require(UUID(uuidString: "00000000-0000-0000-0000-000000000002")),
+            name: "Bilingual meeting")
+        #expect(decoded == [local, bilingual])
+    }
+
+    @Test func aGlossarySurvivesPersistenceVerbatim() throws {
+        var original = profile()
+        original.glossary = " deadline = 締め切り\nrelease = リリース\n"
+        let data = try JSONEncoder().encode(original)
+        #expect(try JSONDecoder().decode(SessionProfile.self, from: data) == original)
+    }
+
+    @Test func copiesKeepTheGlossaryAndEditsDoNotChangeLayout() {
+        var original = profile()
+        original.glossary = "deadline = 締め切り\nrelease = リリース"
+        var copy = original.copy(id: UUID(), name: "copy")
+        #expect(copy.glossary == original.glossary)
+        #expect(copy.sameSettings(as: original))
+        copy.glossary = "deadline = 期限"
+        #expect(!copy.sameSettings(as: original))
+        #expect(!copy.layoutDiffers(from: original))
+        #expect(original.glossary == "deadline = 締め切り\nrelease = リリース")
     }
 }

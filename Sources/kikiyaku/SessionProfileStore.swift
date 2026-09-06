@@ -23,6 +23,7 @@ struct SessionProfile: Codable, Identifiable, Hashable, Sendable {
     var openAIModel: String
     var claudeModel: String
     var provisionalTranslation: Bool
+    var glossary: String = ""
 
     /// Whether switching from `other` to this profile changes how the panel
     /// reads its rows — the mode, or the language pair. A backend or audio
@@ -46,7 +47,8 @@ struct SessionProfile: Codable, Identifiable, Hashable, Sendable {
             openAIBaseURL: openAIBaseURL,
             openAIModel: openAIModel,
             claudeModel: claudeModel,
-            provisionalTranslation: provisionalTranslation
+            provisionalTranslation: provisionalTranslation,
+            glossary: glossary
         )
     }
 
@@ -85,7 +87,7 @@ struct SessionProfile: Codable, Identifiable, Hashable, Sendable {
             openAIBaseURL: "",
             openAIModel: "",
             claudeModel: "claude-sonnet-5",
-            provisionalTranslation: true
+            provisionalTranslation: false
         )
     }
 
@@ -136,8 +138,33 @@ struct SessionProfile: Codable, Identifiable, Hashable, Sendable {
             openAIBaseURL: Preferences.openAIBaseURL,
             openAIModel: Preferences.openAIModel,
             claudeModel: Preferences.claudeModel,
-            provisionalTranslation: Preferences.provisionalTranslationEnabled
+            provisionalTranslation: Preferences.provisionalTranslationEnabled,
+            glossary: Preferences.glossary
         )
+    }
+}
+
+extension SessionProfile {
+    private enum CodingKeys: String, CodingKey {
+        case id, name, mode, audioSource, sourceLocaleID, targetLocaleID
+        case backend, openAIBaseURL, openAIModel, claudeModel, provisionalTranslation, glossary
+    }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        mode = try values.decode(SessionMode.self, forKey: .mode)
+        audioSource = try values.decode(String.self, forKey: .audioSource)
+        sourceLocaleID = try values.decode(String.self, forKey: .sourceLocaleID)
+        targetLocaleID = try values.decode(String.self, forKey: .targetLocaleID)
+        backend = try values.decode(String.self, forKey: .backend)
+        openAIBaseURL = try values.decode(String.self, forKey: .openAIBaseURL)
+        openAIModel = try values.decode(String.self, forKey: .openAIModel)
+        claudeModel = try values.decode(String.self, forKey: .claudeModel)
+        provisionalTranslation = try values.decode(Bool.self, forKey: .provisionalTranslation)
+        // Profiles saved before glossary support have no glossary key.
+        glossary = try values.decodeIfPresent(String.self, forKey: .glossary) ?? ""
     }
 }
 
@@ -226,6 +253,7 @@ final class SessionProfileStore {
         "translationEnabled", "bidirectionalTranslation", "audioSource",
         "sourceLocaleID", "targetLocaleID", "translationBackend",
         "openAIBaseURL", "openAIModel", "claudeModel", "provisionalTranslation",
+        "glossary",
     ]
 
     private init() {
@@ -467,6 +495,7 @@ final class SessionProfileStore {
     func importMirrorIntoSelected(syncLayout: Bool = true) {
         guard let index = profiles.firstIndex(where: { $0.id == selectedID }) else { return }
         let stored = profiles[index]
+        Preferences.restoreProvisionalTranslationIfUnset(stored.provisionalTranslation)
         let mirrored = SessionProfile.fromPreferences(id: stored.id, name: stored.name)
         guard mirrored != stored else { return }
         profiles[index] = mirrored
@@ -497,6 +526,7 @@ final class SessionProfileStore {
         Preferences.openAIModel = profile.openAIModel
         Preferences.claudeModel = profile.claudeModel
         Preferences.provisionalTranslationEnabled = profile.provisionalTranslation
+        Preferences.glossary = profile.glossary
     }
 
     /// `base`, or `base 2`, `base 3`, … — the first that no profile in `among`
