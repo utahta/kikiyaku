@@ -1647,7 +1647,10 @@ final class Engine {
     }
 
     private func feedTranslation(_ job: TranslationJob) {
-        claudeFeed?.yield(job)
+        guard let claudeFeed else { return }
+        let timing = TranslationTiming(id: job.id, kind: .final, attempt: 0)
+        timing.log(.queued)
+        if case .terminated = claudeFeed.yield(job) { timing.log(.dropped) }
     }
 
     // MARK: - Translation
@@ -1683,9 +1686,14 @@ final class Engine {
             var turns = 0
             var disabled = false
             for await job in feed {
-                if disabled { continue }
+                if disabled {
+                    TranslationTiming(id: job.id, kind: .final, attempt: 0).log(.dropped)
+                    continue
+                }
                 var delivered = false
-                for _ in 0..<2 {
+                for attemptNumber in 1...2 {
+                    let timing = TranslationTiming(id: job.id, kind: .final, attempt: attemptNumber)
+                    timing.log(.started)
                     do {
                         // Recreate the session every N turns so context growth in a
                         // long meeting does not inflate latency and cost. Per-request
@@ -1715,20 +1723,23 @@ final class Engine {
                             AppState.shared.beginLLMTranslationAttempt(id: jobID)
                         }
                         let sequence = PartialSequence()
-                        let result = try await active.translate(
-                            job.text, sourceID: job.sourceID, targetID: job.targetID,
-                            onPartial: { partial in
-                                guard let attempt else { return }
-                                let position = sequence.next()
-                                let shown = UtterancePayload.streamedDisplayText(
-                                    partial, sourceID: job.sourceID, targetID: job.targetID)
-                                Task { @MainActor in
-                                    AppState.shared.setLLMTranslationPartial(
-                                        id: jobID, attempt: attempt, sequence: position, text: shown)
-                                }
-                            })
+                        let result = try await TranslationTiming.$current.withValue(timing) {
+                            try await active.translate(
+                                job.text, sourceID: job.sourceID, targetID: job.targetID,
+                                onPartial: { partial in
+                                    guard let attempt else { return }
+                                    let position = sequence.next()
+                                    let shown = UtterancePayload.streamedDisplayText(
+                                        partial, sourceID: job.sourceID, targetID: job.targetID)
+                                    Task { @MainActor in
+                                        AppState.shared.setLLMTranslationPartial(
+                                            id: jobID, attempt: attempt, sequence: position, text: shown)
+                                    }
+                                })
+                        }
                         turns += 1
                         if result.isEmpty {
+                            timing.log(.failed)
                             // Treat an empty response as a failure too. A pipe-based
                             // session may be unhealthy, so rebuild it before the
                             // normal retry.
@@ -1741,9 +1752,12 @@ final class Engine {
                         await MainActor.run {
                             AppState.shared.setLLMTranslation(id: job.id, text: result, engine: engineName)
                         }
+                        timing.log(.completed)
                         delivered = true
                         break
                     } catch {
+                        timing.log(error is CancellationError || (error as? URLError)?.code == .cancelled
+                            ? .cancelled : .failed)
                         // Log the reason to the unified log
                         // (log show --predicate 'process == "kikiyaku"').
                         NSLog("kikiyaku: %@ translate failed: %@", engineName, String(describing: error))
@@ -1814,9 +1828,19 @@ final class Engine {
         // fallback carrying the load): log show --predicate 'process == "kikiyaku"'.
         NSLog("kikiyaku: provisional trigger %@ (%d chars)",
               isFallback ? "fallback" : "boundary", text.count)
-        provisionalFeed?.yield(ProvisionalRequest(
+        guard let provisionalFeed else { return }
+        let request = ProvisionalRequest(
             generation: generation, sequence: provisionalSequence,
-            text: text, isFallback: isFallback))
+            text: text, isFallback: isFallback)
+        let timing = TranslationTiming(id: request.id, kind: .provisional, attempt: 0)
+        timing.log(.queued)
+        switch provisionalFeed.yield(request) {
+        case .dropped(let previous):
+            TranslationTiming(id: previous.id, kind: .provisional, attempt: 0).log(.dropped)
+        case .terminated:
+            timing.log(.dropped)
+        default: break
+        }
     }
 
     /// Shuts the provisional pipeline's pending output down: clears the display
@@ -1865,7 +1889,12 @@ final class Engine {
         provisionalFeed = continuation
         provisionalTask = Task.detached {
             for await request in feed {
-                guard let session = box.get() else { continue }
+                let timing = TranslationTiming(id: request.id, kind: .provisional, attempt: 1)
+                timing.log(.started)
+                guard let session = box.get() else {
+                    timing.log(.dropped)
+                    continue
+                }
                 // Pre-flight check: a buffered request may already be stale —
                 // the utterance finalized or a newer revision superseded it
                 // while the previous one was on the wire. The post-response
@@ -1877,13 +1906,18 @@ final class Engine {
                         && Engine.shared.provisionalSequence == request.sequence
                         && AppState.shared.translationReady
                 }
-                guard stillWanted else { continue }
+                guard stillWanted else {
+                    timing.log(.dropped)
+                    continue
+                }
                 // Run the request as a handle the engine can abort mid-flight
                 // (finalize / boundary retraction), bridging the lane's own
                 // cancellation (teardown) into it so stop still kills it too.
                 let work = Task {
-                    try await session.translateEphemeral(
-                        request.text, sourceID: sourceID, targetID: targetID)
+                    try await TranslationTiming.$current.withValue(timing) {
+                        try await session.translateEphemeral(
+                            request.text, sourceID: sourceID, targetID: targetID)
+                    }
                 }
                 workBox.set(work)
                 defer { workBox.set(nil) }
@@ -1907,19 +1941,22 @@ final class Engine {
                     } onCancel: {
                         work.cancel()
                     }
-                    await MainActor.run {
+                    let applied = await MainActor.run {
                         let state = AppState.shared
                         guard state.provisionalGeneration == request.generation,
                               Engine.shared.provisionalSequence == request.sequence,
-                              state.translationReady else { return }
+                              state.translationReady else { return false }
                         state.provisionalText = result
+                        return true
                     }
+                    timing.log(applied ? .completed : .dropped)
                 } catch {
                     // Cancelling an in-flight HTTP request surfaces as
                     // URLError(.cancelled), not necessarily CancellationError —
                     // both are the intended abort, not a failure to log.
                     let isCancellation = error is CancellationError
                         || (error as? URLError)?.code == .cancelled
+                    timing.log(isCancellation ? .cancelled : .failed)
                     if isCancellation {
                         // Lane teardown ends the loop; a per-request abort
                         // (the utterance finalized while this was on the wire)

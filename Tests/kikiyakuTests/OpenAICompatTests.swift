@@ -80,24 +80,52 @@ struct OpenAICompatTests {
         }
     }
 
-    /// Dropped in one batch, in pairs, so the kept prefix stays stable for the
-    /// prompt cache and never starts with a stranded assistant message.
-    @Test func historyIsTrimmedInPairsByHalfTheCap() {
-        let trimmed = OpenAICompatSession.trimmedHistory(exchanges(60), cap: 60)
-        #expect(trimmed.count == 60)  // 120 - (30 * 2)
-        #expect(trimmed.first?["role"] == "user")
-        #expect(trimmed.first?["content"] == "u30")
+    @Test func reachingTheCapKeepsOnlyTheLastCompleteExchange() {
+        let history = exchanges(20)
+        #expect(OpenAICompatSession.trimmedHistory(history, cap: 20) == Array(history.suffix(2)))
+    }
+
+    @Test func exceedingTheCapKeepsOnlyTheLastCompleteExchange() {
+        let history = exchanges(25)
+        #expect(OpenAICompatSession.trimmedHistory(history, cap: 20) == Array(history.suffix(2)))
     }
 
     @Test func belowTheCapNothingIsDropped() {
-        let history = exchanges(59)
-        #expect(OpenAICompatSession.trimmedHistory(history, cap: 60).count == history.count)
+        for count in [0, 1, 19] {
+            let history = exchanges(count)
+            #expect(OpenAICompatSession.trimmedHistory(history, cap: 20) == history)
+        }
     }
 
-    @Test func anOddCapStillDropsWholePairs() {
-        let trimmed = OpenAICompatSession.trimmedHistory(exchanges(39), cap: 39)
-        #expect(trimmed.count == 78 - 38)  // (39 / 2) * 2 = 38 messages dropped
-        #expect(trimmed.first?["role"] == "user")
+    @Test func anOddCapStillKeepsOnlyTheLastCompleteExchange() {
+        let history = exchanges(39)
+        #expect(OpenAICompatSession.trimmedHistory(history, cap: 39) == Array(history.suffix(2)))
+    }
+
+    @Test func anUnfinishedTrailingUserIsNotKeptAsAnExchange() {
+        let complete = exchanges(20)
+        let history = complete + [["role": "user", "content": "unfinished"]]
+        #expect(OpenAICompatSession.trimmedHistory(history, cap: 20) == Array(complete.suffix(2)))
+    }
+
+    @Test func anUnfinishedUserBelowTheCapDoesNotTriggerAReset() {
+        let history = exchanges(19) + [["role": "user", "content": "unfinished"]]
+        #expect(OpenAICompatSession.trimmedHistory(history, cap: 20) == history)
+    }
+
+    @Test func resetsHappenAfterTwentyThenEveryNineteenCompletedExchanges() {
+        var history: [[String: String]] = []
+        var cuts: [Int] = []
+        for turn in 1...60 {
+            history += [["role": "user", "content": "u\(turn)"],
+                        ["role": "assistant", "content": "a\(turn)"]]
+            let trimmed = OpenAICompatSession.trimmedHistory(history, cap: 20)
+            if trimmed.count < history.count { cuts.append(turn) }
+            history = trimmed
+        }
+        #expect(cuts == [20, 39, 58])
+        #expect(history.first?["content"] == "u58")
+        #expect(history.count == 6)
     }
 
     // MARK: historyCap(forContextLength:)
@@ -106,6 +134,55 @@ struct OpenAICompatTests {
         #expect(OpenAICompatSession.historyCap(forContextLength: 8192) == 64)
         #expect(OpenAICompatSession.historyCap(forContextLength: 2048) == 20)   // floor
         #expect(OpenAICompatSession.historyCap(forContextLength: 262_144) == 120)  // ceiling
+    }
+
+    @Test func absentOrMalformedHistoryOverridesUseTwenty() {
+        #expect(OpenAICompatSession.defaultHistoryCap == 20)
+        let values: [Any?] = [nil, "", "invalid", "40.5", 40.5, [40]]
+        for value in values {
+            #expect(OpenAICompatSession.requestedHistoryCap(from: value) == 20)
+        }
+    }
+
+    @Test func historyOverridesAcceptIntegersAndIntegerStrings() {
+        for value: Any in [40, "40", " 40\n", NSNumber(value: 40)] {
+            #expect(OpenAICompatSession.requestedHistoryCap(from: value) == 40)
+        }
+        #expect(OpenAICompatSession.requestedHistoryCap(from: 21) == 21)
+    }
+
+    @Test func historyOverridesAreClampedIndependentlyOfTheDefault() {
+        for value in [Int.min, -1, 0, 19] {
+            #expect(OpenAICompatSession.requestedHistoryCap(from: value) == 20)
+        }
+        for value in [120, 121, Int.max] {
+            #expect(OpenAICompatSession.requestedHistoryCap(from: value) == 120)
+        }
+    }
+
+    @Test func unknownContextUsesTheRequestedHistoryCap() {
+        for requested in [20, 40, 120] {
+            for context: Int? in [nil, 0, -1] {
+                #expect(OpenAICompatSession.effectiveHistoryCap(requested: requested, contextLength: context)
+                    == requested)
+            }
+        }
+    }
+
+    @Test func aLateContextProbeStillHonorsTheRequestedHistoryCap() {
+        for requested in [20, 40] {
+            #expect(OpenAICompatSession.effectiveHistoryCap(requested: requested, contextLength: nil)
+                == requested)
+            #expect(OpenAICompatSession.effectiveHistoryCap(requested: requested, contextLength: 262_144)
+                == requested)
+        }
+    }
+
+    @Test func theContextEstimateCanLowerButNotRaiseTheRequestedCap() {
+        #expect(OpenAICompatSession.effectiveHistoryCap(requested: 120, contextLength: 8192) == 64)
+        #expect(OpenAICompatSession.effectiveHistoryCap(requested: 40, contextLength: 2048) == 20)
+        #expect(OpenAICompatSession.effectiveHistoryCap(requested: 40, contextLength: 1024) == 20)
+        #expect(OpenAICompatSession.effectiveHistoryCap(requested: 120, contextLength: Int.max) == 120)
     }
 
     // MARK: shouldPreload(host:apiKey:)
@@ -219,7 +296,60 @@ struct OpenAICompatTests {
             == .error("context overflow"))
     }
 
+    @Test(arguments: [false, true])
+    func aSuccessfulHTTPCompletionIsPreservedDespiteCancellation(isCancelled: Bool) {
+        #expect(OpenAICompatSession.httpCompletionEvent(succeeded: true, isCancelled: isCancelled) == .httpEnd)
+    }
+
+    @Test func anUnsuccessfulHTTPCompletionDistinguishesCancellationFromFailure() {
+        #expect(OpenAICompatSession.httpCompletionEvent(succeeded: false, isCancelled: true) == .httpCancelled)
+        #expect(OpenAICompatSession.httpCompletionEvent(succeeded: false, isCancelled: false) == .httpFailed)
+    }
+
     // MARK: collectStreamedAnswer(lines:onPartial:)
+
+    @Test func firstTextTimingSkipsEmptyChunksAndFiresBeforeTheFirstPartial() async throws {
+        let seen = PartialLog()
+        let lines = [
+            #"data: {"choices":[{"delta":{"role":"assistant"}}]}"#,
+            chunk(""), chunk("訳"), chunk("文", finish: "stop"),
+        ]
+        let answer = try await OpenAICompatSession.collectStreamedAnswer(
+            lines: AsyncStream { continuation in
+                for line in lines { continuation.yield(line) }
+                continuation.finish()
+            },
+            onPartial: { seen.append($0) },
+            onFirstText: { seen.append("first_text") })
+        #expect(answer == "訳文")
+        #expect(seen.entries == ["first_text", "訳", "訳文"])
+    }
+
+    @Test func anEmptyAnswerHasNoFirstTextTiming() async throws {
+        let seen = PartialLog()
+        _ = try await OpenAICompatSession.collectStreamedAnswer(
+            lines: AsyncStream { continuation in
+                continuation.yield(chunk("", finish: "stop"))
+                continuation.finish()
+            },
+            onPartial: { seen.append($0) },
+            onFirstText: { seen.append("first_text") })
+        #expect(seen.entries.isEmpty)
+    }
+
+    @Test func aTruncatedStreamStillRecordsTheFirstText() async {
+        let seen = PartialLog()
+        await #expect(throws: OpenAICompatError.self) {
+            try await OpenAICompatSession.collectStreamedAnswer(
+                lines: AsyncStream { continuation in
+                    continuation.yield(chunk("訳"))
+                    continuation.finish()
+                },
+                onPartial: { seen.append($0) },
+                onFirstText: { seen.append("first_text") })
+        }
+        #expect(seen.entries == ["first_text", "訳"])
+    }
 
     private func chunk(_ content: String, finish: String? = nil) -> String {
         let reason = finish.map { "\"\($0)\"" } ?? "null"

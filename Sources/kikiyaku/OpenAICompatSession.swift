@@ -62,9 +62,8 @@ enum OpenAICompatError: Error, CustomStringConvertible {
 ///
 /// The conversation history is kept locally and sent in full on every request
 /// (the cloud side applies automatic prompt caching; llama.cpp-style servers
-/// reuse the KV-cache prefix). When the history grows too large, the first half
-/// is dropped in one batch (a sliding window would break the cache's
-/// prefix-invariance on every request).
+/// reuse the KV-cache prefix). At the cap, one complete exchange is kept as an
+/// output-format example. Batch resets leave the prefix stable between cuts.
 ///
 /// `translate` is called serially from a single Task (the LLM lane's
 /// discipline). `translateEphemeral` (the provisional lane) may run
@@ -80,13 +79,10 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     private let systemPrompt: String
     private let stateLock = NSLock()
     private var history: [[String: String]] = []
-    /// How many utterances of conversation to carry, guarded by stateLock.
-    ///
-    /// Starts at a figure that fits the 8192-token context most local servers
-    /// load by default, and is raised once the endpoint says it can take more.
-    /// Sized in utterances rather than tokens because that is what the history
-    /// is made of; the conversion below is measured, not guessed.
-    private var historyCap = OpenAICompatSession.defaultHistoryCap
+    /// Captured once so a late context probe uses the same requested limit.
+    private let requestedHistoryCap: Int
+    /// Effective limit in exchanges, guarded by stateLock.
+    private var historyCap: Int
     /// How many times the context length has been asked for, and whether an
     /// answer ever came. Guarded by stateLock.
     private var contextProbes = 0
@@ -381,19 +377,10 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         return models
     }
 
-    /// Utterances of history when the endpoint will not say how much context it
-    /// has. Chosen for the 8192 tokens local servers commonly load by default:
-    /// 60 utterances is around 4,300 tokens of history, which leaves room for
-    /// the utterance being translated and its answer. Guessing high instead
-    /// would overflow silently — the server drops the front of the prompt and
-    /// nothing says so, leaving a session that believes it has context it lost.
-    static let defaultHistoryCap = 60
+    /// Short batches limit context growth between resets.
+    static let defaultHistoryCap = 20
 
-    /// Never carry more than this, however much context is on offer. Deeper
-    /// histories were measured as no faster to serve (the prompt cache sees to
-    /// that) but they do lengthen the pause when half of one is dropped, and
-    /// the translation quality gained past this point did not show up in the
-    /// comparison.
+    /// Bounds the hidden override independently of the default.
     private static let maximumHistoryCap = 120
 
     /// How many times to ask the endpoint for its context length: once at
@@ -413,10 +400,29 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     /// over the edge.
     private static let historyShareOfContext = 0.55
 
-    /// How many utterances of history a reported context length affords.
+    /// A context-based estimate, not a token-budget guarantee: even a small
+    /// context retains the 20-exchange floor, and utterance lengths vary.
     static func historyCap(forContextLength contextLength: Int) -> Int {
         let affordable = Int(Double(contextLength) * historyShareOfContext) / tokensPerExchange
         return min(maximumHistoryCap, max(20, affordable))
+    }
+
+    static func requestedHistoryCap(from value: Any?) -> Int {
+        let parsed: Int?
+        if let number = value as? Int {
+            parsed = number
+        } else if let text = value as? String {
+            parsed = Int(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        } else {
+            parsed = nil
+        }
+        return min(maximumHistoryCap, max(20, parsed ?? defaultHistoryCap))
+    }
+
+    /// `requested` is the clamped snapshot, including when context is unknown.
+    static func effectiveHistoryCap(requested: Int, contextLength: Int?) -> Int {
+        guard let contextLength, contextLength > 0 else { return requested }
+        return min(requested, historyCap(forContextLength: contextLength))
     }
 
     init(baseURL: String, apiKey: String?, model: String, systemPrompt: String) {
@@ -425,26 +431,15 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         self.apiKey = (apiKey?.isEmpty ?? true) ? nil : apiKey
         self.model = model
         self.systemPrompt = systemPrompt
+        requestedHistoryCap = Self.requestedHistoryCap(from: UserDefaults.standard.object(forKey: "historyCap"))
+        historyCap = Self.effectiveHistoryCap(requested: requestedHistoryCap, contextLength: nil)
 
-
+        debugLog("history policy=keep1 requested_cap=\(requestedHistoryCap) effective_cap=\(historyCap)")
         probeContextLength()
     }
 
-    /// Asks the endpoint how much context the model was loaded with, and sizes
-    /// the history to it.
-    ///
-    /// Asked in the background, never awaited: a session must start whether or
-    /// not the endpoint answers, and the default cap is safe until it does. The
-    /// opening utterances of a meeting cannot exceed any cap anyway, so there
-    /// is nothing lost by learning this a moment late.
-    ///
-    /// Asked more than once, and it has to be. LM Studio can be set to load a
-    /// model only when the first request arrives, and until then it reports the
-    /// model as not-loaded with no loaded length at all. A single question at
-    /// startup would therefore never get an answer on such a setup, and the
-    /// adaptation would silently never happen — which is exactly what it did.
-    /// The second question follows the first translation, by which time the
-    /// model is in memory whichever way it was configured.
+    /// Probe again after the first translation because models loaded on demand
+    /// may not report their context at session startup.
     private func probeContextLength() {
         stateLock.lock()
         let attempted = contextProbes
@@ -456,33 +451,26 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         let baseURL = baseURL
         let apiKey = apiKey
         let model = model
+        let requestedCap = requestedHistoryCap
         Task { [weak self] in
             guard let length = await Self.contextLength(
                 baseURL: baseURL, apiKey: apiKey, model: model) else {
-                debugLog("no loaded context length on probe \(attempted + 1); history cap stays at \(Self.defaultHistoryCap)")
+                debugLog("no loaded context length on probe \(attempted + 1); requested history cap \(requestedCap)")
                 return
             }
             self?.adoptContextLength(length)
         }
     }
 
-    /// Sizes the history to a context the endpoint has just reported.
-    ///
-    /// The point is not to use every token on offer but to stop guessing: a cap
-    /// chosen blind is either too small for a machine set up for long context,
-    /// or too large for one left at its default — and being too large is the
-    /// bad direction, since the server drops the front of an over-long prompt
-    /// without telling anyone.
+    /// A reported context can reduce the requested cap, never raise it.
     private func adoptContextLength(_ contextLength: Int) {
-        let cap = Self.historyCap(forContextLength: contextLength)
+        let cap = Self.effectiveHistoryCap(requested: requestedHistoryCap, contextLength: contextLength)
         stateLock.lock()
         let previous = historyCap
         historyCap = cap
         contextAdapted = true
         stateLock.unlock()
-        if cap != previous {
-            debugLog("endpoint reports \(contextLength) tokens of context; history cap \(previous) -> \(cap)")
-        }
+        debugLog("endpoint reports \(contextLength) tokens of context; history cap \(previous) -> \(cap)")
     }
 
     func translate(
@@ -494,7 +482,9 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
             "content": UtterancePayload.wrap(text, sourceID: sourceID, targetID: targetID),
         ]
         let raw = try await performChat(
-            messages: contextMessages(appending: userMessage), onPartial: onPartial)
+            messages: contextMessages(appending: userMessage),
+            timing: TranslationTiming.current ?? TranslationTiming(id: UUID(), kind: .final, attempt: 1),
+            onPartial: onPartial)
         // Normalized before it is recorded, not merely before it is shown: the
         // history is what the model reads back as an example of its own
         // answers, so a wrapped one left in it teaches the next hundred.
@@ -521,7 +511,9 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
             "role": "user",
             "content": UtterancePayload.wrap(text, sourceID: sourceID, targetID: targetID),
         ]
-        let raw = try await performChat(messages: contextMessages(appending: userMessage))
+        let raw = try await performChat(
+            messages: contextMessages(appending: userMessage),
+            timing: TranslationTiming.current ?? TranslationTiming(id: UUID(), kind: .provisional, attempt: 1))
         let result = normalized(raw, sourceID: sourceID, targetID: targetID)
         guard !result.isEmpty else { throw OpenAICompatError.emptyResponse }
         return result
@@ -553,25 +545,25 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         stateLock.lock()
         history.append(userMessage)
         history.append(["role": "assistant", "content": result])
+        let before = history.count / 2
         history = Self.trimmedHistory(history, cap: historyCap)
+        let after = history.count / 2
+        let cap = historyCap
         stateLock.unlock()
+        if after < before {
+            debugLog("history reset before_pairs=\(before) after_pairs=\(after) cap=\(cap)")
+        }
     }
 
-    /// Half the cap is dropped in one batch when it is reached. A sliding
-    /// window would move the prefix on every request and cost the prompt
-    /// cache each time; this pays for it once, and then not again for
-    /// another half-cap of conversation.
-    ///
-    /// Counted in exchanges and removed in pairs. The cap is a number of
-    /// utterances while the array holds two messages each, so an odd cap —
-    /// 39 utterances, say, which a 5,000-token context produces — would
-    /// otherwise strand an assistant message with no user message before
-    /// it, and hand the model a conversation that never happened.
+    /// Keep one complete exchange as an output-format example. History alternates
+    /// user/assistant; a trailing unfinished user is excluded when resetting.
     static func trimmedHistory(
         _ history: [[String: String]], cap: Int
     ) -> [[String: String]] {
-        guard history.count >= cap * 2 else { return history }
-        return Array(history.dropFirst((cap / 2) * 2))
+        let completePairs = history.count / 2
+        guard completePairs >= cap, completePairs > 0 else { return history }
+        let end = completePairs * 2
+        return Array(history[(end - 2)..<end])
     }
 
     private func shouldSendReasoningEffort() -> Bool {
@@ -649,10 +641,15 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     /// refuse that utterance's first attempt too.
     func preload() {
         guard let endpoint, Self.shouldPreload(host: endpoint.host(), apiKey: apiKey) else { return }
+        let timing = TranslationTiming(id: UUID(), kind: .preload, attempt: 1)
+        timing.log(.queued, historyPairs: 0)
         Task.detached { [self] in
+            timing.log(.started, historyPairs: 0)
+            var completionEvent = TranslationTiming.Event.failed
+            defer { timing.log(completionEvent, historyPairs: 0) }
             let started = Date()
             var includeEffort = shouldSendReasoningEffort()
-            for _ in 0..<2 {
+            for httpAttempt in 1...2 {
                 let body = Self.preloadBody(
                     model: model, systemPrompt: systemPrompt, includeEffort: includeEffort)
                 var request = URLRequest(url: endpoint, timeoutInterval: 180)
@@ -663,11 +660,23 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
                 }
                 guard let payload = try? JSONSerialization.data(withJSONObject: body) else { return }
                 request.httpBody = payload
+                var httpEvent = TranslationTiming.Event.httpFailed
+                var status = 0
+                defer {
+                    timing.log(httpEvent, httpAttempt: httpAttempt, historyPairs: 0, status: status)
+                }
                 do {
+                    timing.log(.httpStart, httpAttempt: httpAttempt, historyPairs: 0)
                     let (data, response) = try await URLSession.shared.data(for: request)
                     let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                    status = code
                     let detail = String(decoding: data.prefix(400), as: UTF8.self)
                     if code == 200 {
+                        if debugLoggingEnabled, let text = try? Self.answerText(fromCompletion: data), !text.isEmpty {
+                            timing.log(.firstText, httpAttempt: httpAttempt, historyPairs: 0, status: code)
+                        }
+                        httpEvent = .httpEnd
+                        completionEvent = .completed
                         debugLog("preloaded \(model) in \(String(format: "%.1f", Date().timeIntervalSince(started)))s")
                         return
                     }
@@ -675,6 +684,7 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
                         debugLog("endpoint refused reasoning_effort on preload (HTTP \(code)); retrying without it")
                         disableReasoningEffort()
                         includeEffort = false
+                        httpEvent = .httpRetry
                         continue
                     }
                     debugLog("preload of \(model) answered HTTP \(code): \(detail.prefix(200))")
@@ -746,6 +756,11 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         }
     }
 
+    static func httpCompletionEvent(succeeded: Bool, isCancelled: Bool) -> TranslationTiming.Event {
+        if succeeded { return .httpEnd }
+        return isCancelled ? .httpCancelled : .httpFailed
+    }
+
     /// One /chat/completions round trip, shared by translate and
     /// translateEphemeral. Validates the response (an empty translation is a
     /// failure) but never touches the history.
@@ -758,6 +773,8 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     /// the panel roughly a second before a whole one would be.
     private func performChat(
         messages: [[String: String]],
+        timing: TranslationTiming,
+        httpAttempt: Int = 1,
         onPartial: (@Sendable (String) -> Void)? = nil
     ) async throws -> String {
         guard let endpoint else {
@@ -787,11 +804,25 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
+        let historyPairs = max(0, (messages.count - 2) / 2)
+        var status = 0
+        var responseStreamed = false
+        var completionEvent: TranslationTiming.Event? = .httpFailed
+        defer {
+            if let event = completionEvent {
+                timing.log(Self.httpCompletionEvent(succeeded: event == .httpEnd, isCancelled: Task.isCancelled),
+                           httpAttempt: httpAttempt, historyPairs: historyPairs,
+                           streamed: responseStreamed, status: status)
+            }
+        }
+
         // The status line arrives before any of the body on both paths, so
         // the reasoning_effort fallback below reads the same whether the
         // answer is going to be streamed or not.
+        timing.log(.httpStart, httpAttempt: httpAttempt, historyPairs: historyPairs, streamed: streamed)
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         guard let http = response as? HTTPURLResponse else { throw OpenAICompatError.badResponse }
+        status = http.statusCode
         guard http.statusCode == 200 else {
             var data = Data()
             for try await byte in bytes {
@@ -815,7 +846,10 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
                Self.refuses(field: "reasoning_effort", status: http.statusCode, body: detail) {
                 debugLog("endpoint refused reasoning_effort (HTTP \(http.statusCode)); retrying without it")
                 disableReasoningEffort()
-                return try await performChat(messages: messages, onPartial: onPartial)
+                timing.log(.httpRetry, httpAttempt: httpAttempt, historyPairs: historyPairs, status: status)
+                completionEvent = nil
+                return try await performChat(
+                    messages: messages, timing: timing, httpAttempt: httpAttempt + 1, onPartial: onPartial)
             }
             // The same for `stream`: an endpoint that has the ordinary
             // completion but not the streamed one would otherwise fail
@@ -825,7 +859,10 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
                Self.refuses(field: "stream", status: http.statusCode, body: detail) {
                 debugLog("endpoint refused streaming (HTTP \(http.statusCode)); translating without it from here on")
                 disableStream()
-                return try await performChat(messages: messages, onPartial: onPartial)
+                timing.log(.httpRetry, httpAttempt: httpAttempt, historyPairs: historyPairs, status: status)
+                completionEvent = nil
+                return try await performChat(
+                    messages: messages, timing: timing, httpAttempt: httpAttempt + 1, onPartial: onPartial)
             }
             throw OpenAICompatError.httpError(http.statusCode, detail)
         }
@@ -837,14 +874,24 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         // would shut itself down after three.
         let content: String
         if let onPartial, Self.isEventStream(contentType: http.value(forHTTPHeaderField: "Content-Type")) {
-            content = try await Self.collectStreamedAnswer(lines: bytes.lines, onPartial: onPartial)
+            responseStreamed = true
+            content = try await Self.collectStreamedAnswer(
+                lines: bytes.lines, onPartial: onPartial,
+                onFirstText: {
+                    timing.log(.firstText, httpAttempt: httpAttempt, historyPairs: historyPairs,
+                               streamed: true, status: 200)
+                })
         } else {
             var data = Data()
             for try await byte in bytes { data.append(byte) }
             content = try Self.answerText(fromCompletion: data)
+            if !content.isEmpty {
+                timing.log(.firstText, httpAttempt: httpAttempt, historyPairs: historyPairs, status: 200)
+            }
         }
         let result = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !result.isEmpty else { throw OpenAICompatError.emptyResponse }
+        completionEvent = .httpEnd
         return result
     }
 
@@ -883,7 +930,8 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     /// complete answer back until the timeout, and whatever follows the
     /// finish (a usage chunk, the sentinel) has nothing more to add.
     static func collectStreamedAnswer<Lines: AsyncSequence>(
-        lines: Lines, onPartial: @Sendable (String) -> Void
+        lines: Lines, onPartial: @Sendable (String) -> Void,
+        onFirstText: (@Sendable () -> Void)? = nil
     ) async throws -> String where Lines.Element == String {
         var accumulated = ""
         var completed = false
@@ -897,6 +945,7 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
                 throw OpenAICompatError.streamError(message)
             case .delta(let piece, let finished):
                 if !piece.isEmpty {
+                    if accumulated.isEmpty { onFirstText?() }
                     accumulated += piece
                     onPartial(accumulated)
                 }
