@@ -306,7 +306,7 @@ struct OpenAICompatTests {
         #expect(OpenAICompatSession.refusedField(in: [], status: 400, body: "temperature") == nil)
     }
 
-    @Test func threeRefusalsAllowAtMostFourRequestsInAnyOrder() throws {
+    @Test func threeParameterRefusalsAllowAtMostFourRequestsInAnyOrder() throws {
         typealias Field = OpenAICompatSession.ChatField
         let orders: [[Field]] = [
             [.reasoningEffort, .temperature, .stream], [.reasoningEffort, .stream, .temperature],
@@ -314,20 +314,22 @@ struct OpenAICompatTests {
             [.stream, .reasoningEffort, .temperature], [.stream, .temperature, .reasoningEffort],
         ]
         for order in orders {
-            var fields = Set(Field.allCases)
+            var options = OpenAICompatSession.ChatOptions()
             var requests = 1
             for rejected in order {
-                let field = try #require(OpenAICompatSession.refusedField(
-                    in: fields, status: 400, body: "Unsupported parameter: \(rejected.rawValue)"))
+                let refusal = options.applyRefusal(
+                    sent: options, status: 400, body: "Unsupported parameter: \(rejected.rawValue)")
+                let field = try #require(refusal)
                 #expect(field == rejected)
-                fields.remove(field)
                 requests += 1
-                let body = OpenAICompatSession.chatBody(model: "m", messages: [], maxCompletionTokens: 2000, fields: fields)
+                let body = OpenAICompatSession.chatBody(
+                    model: "m", messages: [], maxCompletionTokens: 2000,
+                    fields: options.fields, reasoningEffort: options.reasoningEffort)
                 #expect(body[rejected.rawValue] == nil)
-                #expect(OpenAICompatSession.refusedField(in: fields, status: 422, body: rejected.rawValue) == nil)
+                #expect(options.applyRefusal(sent: options, status: 422, body: rejected.rawValue) == nil)
             }
             #expect(requests == 4)
-            #expect(fields.isEmpty)
+            #expect(options.fields.isEmpty)
         }
     }
 
@@ -342,7 +344,7 @@ struct OpenAICompatTests {
         #expect(OpenAICompatSession.refusedField(in: fields, status: 422, body: detail) == nil)
     }
 
-    @Test func preloadRefusalsAllowAtMostThreeRequests() throws {
+    @Test func preloadParameterRefusalsAllowAtMostThreeRequests() throws {
         typealias Field = OpenAICompatSession.ChatField
         let orders: [[Field]] = [[.reasoningEffort, .temperature], [.temperature, .reasoningEffort]]
         for order in orders {
@@ -358,6 +360,119 @@ struct OpenAICompatTests {
             }
             #expect(requests == 3)
             #expect(fields.isEmpty)
+        }
+    }
+
+    private static func reasoningValueError(_ value: String) -> String {
+        #"{"error":{"message":"Unsupported value: 'reasoning_effort' does not support '\#(value)' with this model.","param":"reasoning_effort","code":"unsupported_value"}}"#
+    }
+
+    @Test func refusedNoneUsesLowForSubsequentChatAndPreloadRequests() {
+        var options = OpenAICompatSession.ChatOptions()
+        #expect(options.applyRefusal(sent: options, status: 400, body: Self.reasoningValueError("none")) == .reasoningEffort)
+        #expect(options.reasoningEffort == .low)
+        #expect(options.fields == Set(OpenAICompatSession.ChatField.allCases))
+        for _ in 0..<2 {
+            let chat = OpenAICompatSession.chatBody(
+                model: "m", messages: [], maxCompletionTokens: 2000,
+                fields: options.fields, reasoningEffort: options.reasoningEffort)
+            let preload = OpenAICompatSession.preloadBody(
+                model: "m", systemPrompt: "sys", fields: options.fields,
+                reasoningEffort: options.reasoningEffort)
+            #expect(chat["reasoning_effort"] as? String == "low")
+            #expect(preload["reasoning_effort"] as? String == "low")
+            #expect(chat["temperature"] as? Int == 0)
+            #expect(chat["stream"] as? Bool == true)
+            #expect(preload["stream"] == nil)
+        }
+        #expect(options.applyRefusal(sent: options, status: 400, body: Self.reasoningValueError("low")) == .reasoningEffort)
+        let body = OpenAICompatSession.chatBody(
+            model: "m", messages: [], maxCompletionTokens: 2000,
+            fields: options.fields, reasoningEffort: options.reasoningEffort)
+        #expect(body["reasoning_effort"] == nil)
+        #expect(options.applyRefusal(sent: options, status: 400, body: Self.reasoningValueError("low")) == nil)
+    }
+
+    @Test(arguments: [
+        #"{"error":{"param":"reasoning_effort","code":"unsupported_parameter"}}"#,
+        "Unsupported parameter: 'reasoning_effort'.",
+        "extra field reasoning_effort",
+    ])
+    func unsupportedReasoningParameterSkipsLow(_ body: String) {
+        var options = OpenAICompatSession.ChatOptions()
+        #expect(options.applyRefusal(sent: options, status: 400, body: body) == .reasoningEffort)
+        #expect(!options.fields.contains(.reasoningEffort))
+        #expect(options.reasoningEffort == .none)
+    }
+
+    @Test func aPlainTextValueRefusalAlsoTriesLow() {
+        var options = OpenAICompatSession.ChatOptions()
+        let body = "Unsupported value: 'reasoning_effort' does not support 'none' with this model."
+        #expect(options.applyRefusal(sent: options, status: 422, body: body) == .reasoningEffort)
+        #expect(options.reasoningEffort == .low)
+    }
+
+    @Test func unrelatedFailuresDoNotChangeReasoningOptions() {
+        for status in [401, 403, 429, 500, 503] {
+            var options = OpenAICompatSession.ChatOptions()
+            #expect(options.applyRefusal(sent: options, status: status, body: Self.reasoningValueError("none")) == nil)
+            #expect(options.reasoningEffort == .none)
+            #expect(options.fields == Set(OpenAICompatSession.ChatField.allCases))
+        }
+        var options = OpenAICompatSession.ChatOptions()
+        let unrelated = #"{"error":{"param":"max_completion_tokens","code":"unsupported_value"},"input":{"reasoning_effort":"none"}}"#
+        #expect(options.applyRefusal(sent: options, status: 400, body: unrelated) == nil)
+        #expect(options.reasoningEffort == .none)
+    }
+
+    @Test func lateNoneRefusalsDoNotSkipLowOrReenableOmittedReasoning() {
+        var options = OpenAICompatSession.ChatOptions()
+        let earlierRequest = options
+        #expect(options.applyRefusal(sent: earlierRequest, status: 400, body: Self.reasoningValueError("none")) == .reasoningEffort)
+        #expect(options.applyRefusal(sent: earlierRequest, status: 400, body: Self.reasoningValueError("none")) == .reasoningEffort)
+        #expect(options.reasoningEffort == .low)
+        #expect(options.fields.contains(.reasoningEffort))
+        #expect(options.applyRefusal(sent: options, status: 400, body: Self.reasoningValueError("low")) == .reasoningEffort)
+        #expect(options.applyRefusal(sent: earlierRequest, status: 400, body: Self.reasoningValueError("none")) == .reasoningEffort)
+        #expect(!options.fields.contains(.reasoningEffort))
+    }
+
+    @Test func valueAndParameterRefusalsFinishWithinFiveChatRequests() {
+        for noneIndex in 0..<3 {
+            for lowIndex in (noneIndex + 1)..<4 {
+                for otherFields in [["temperature", "stream"], ["stream", "temperature"]] {
+                    var options = OpenAICompatSession.ChatOptions()
+                    var remaining = otherFields
+                    for index in 0..<4 {
+                        let body: String
+                        if index == noneIndex { body = Self.reasoningValueError("none") }
+                        else if index == lowIndex { body = Self.reasoningValueError("low") }
+                        else { body = "Unsupported parameter: \(remaining.removeFirst())" }
+                        #expect(options.applyRefusal(sent: options, status: 400, body: body) != nil)
+                    }
+                    #expect(options.fields.isEmpty)
+                    #expect(options.applyRefusal(sent: options, status: 400, body: Self.reasoningValueError("low")) == nil)
+                }
+            }
+        }
+    }
+
+    @Test func preloadCanRecoverAfterThreeRefusals() {
+        for temperatureIndex in 0..<3 {
+            var options = OpenAICompatSession.ChatOptions()
+            options.fields.remove(.stream)
+            var errors = [Self.reasoningValueError("none"), Self.reasoningValueError("low")]
+            errors.insert("Unsupported parameter: temperature", at: temperatureIndex)
+            for error in errors {
+                #expect(options.applyRefusal(sent: options, status: 400, body: error) != nil)
+            }
+            let body = OpenAICompatSession.preloadBody(
+                model: "m", systemPrompt: "sys", fields: options.fields,
+                reasoningEffort: options.reasoningEffort)
+            #expect(body["reasoning_effort"] == nil)
+            #expect(body["temperature"] == nil)
+            #expect(body["stream"] == nil)
+            #expect(body["max_completion_tokens"] as? Int == 1)
         }
     }
 

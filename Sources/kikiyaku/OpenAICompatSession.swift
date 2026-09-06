@@ -93,8 +93,39 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         case stream
     }
 
+    enum ReasoningEffort: String, Sendable {
+        case none, low
+    }
+
+    struct ChatOptions: Sendable {
+        var fields = Set(ChatField.allCases)
+        var reasoningEffort = ReasoningEffort.none
+
+        mutating func applyRefusal(sent: Self, status: Int, body: String) -> ChatField? {
+            guard let field = refusedField(in: sent.fields, status: status, body: body) else { return nil }
+            if field == .reasoningEffort, sent.reasoningEffort == .none,
+               Self.isReasoningValueRefusal(body) {
+                // A late refusal from another lane must not re-enable a dropped field.
+                if fields.contains(.reasoningEffort) { reasoningEffort = .low }
+            } else {
+                fields.remove(field)
+            }
+            return field
+        }
+
+        private static func isReasoningValueRefusal(_ body: String) -> Bool {
+            if let json = try? JSONSerialization.jsonObject(with: Data(body.utf8)) as? [String: Any],
+               let error = json["error"] as? [String: Any] {
+                return error["param"] as? String == "reasoning_effort"
+                    && ["unsupported_value", "invalid_value"].contains(error["code"] as? String ?? "")
+            }
+            let pattern = #"^\s*(?:Unsupported|Invalid) value:\s*['"]?reasoning_effort\b"#
+            return body.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
+        }
+    }
+
     /// Refusals persist across both lanes and preload. Guarded by stateLock.
-    private var supportedFields = Set(ChatField.allCases)
+    private var chatOptions = ChatOptions()
     /// Guarded by stateLock: both lanes call performChat concurrently and can
     /// write this (bad-URL path) while the main lane reads isAlive.
     private var alive = true
@@ -551,16 +582,22 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
         return Array(history[(end - 2)..<end])
     }
 
-    private func requestFields(streamed: Bool) -> Set<ChatField> {
+    private func requestOptions(streamed: Bool) -> ChatOptions {
         stateLock.lock()
         defer { stateLock.unlock() }
-        return streamed ? supportedFields : supportedFields.subtracting([.stream])
+        var options = chatOptions
+        if !streamed { options.fields.remove(.stream) }
+        return options
     }
 
-    private func disableField(_ field: ChatField) {
+    private func applyRefusal(sent: ChatOptions, status: Int, body: String) -> Bool {
         stateLock.lock()
-        supportedFields.remove(field)
-        stateLock.unlock()
+        defer { stateLock.unlock() }
+        guard let field = chatOptions.applyRefusal(sent: sent, status: status, body: body) else { return false }
+        let next = field == .reasoningEffort && chatOptions.fields.contains(field)
+            ? chatOptions.reasoningEffort.rawValue : "omitted"
+        debugLog("endpoint refused \(field.rawValue) (HTTP \(status)); retrying with \(field.rawValue)=\(next)")
+        return true
     }
 
     static func refusedField(in fields: Set<ChatField>, status: Int, body: String) -> ChatField? {
@@ -609,8 +646,8 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     /// cloud service has nothing to load, and the request would be a billed,
     /// rate-limited completion for nothing on every session start.
     ///
-    /// Refused optional fields are dropped as on translation requests, so
-    /// validation errors do not prevent the server from loading the model.
+    /// Preload shares translation's parameter fallbacks so validation errors
+    /// do not prevent the server from loading the model.
     func preload() {
         guard let endpoint, Self.shouldPreload(host: endpoint.host(), apiKey: apiKey) else { return }
         let timing = TranslationTiming(id: UUID(), kind: .preload, attempt: 1)
@@ -620,10 +657,11 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
             var completionEvent = TranslationTiming.Event.failed
             defer { timing.log(completionEvent, historyPairs: 0) }
             let started = Date()
-            for httpAttempt in 1...3 {
-                let fields = requestFields(streamed: false)
+            for httpAttempt in 1...4 {
+                let options = requestOptions(streamed: false)
                 let body = Self.preloadBody(
-                    model: model, systemPrompt: systemPrompt, fields: fields)
+                    model: model, systemPrompt: systemPrompt, fields: options.fields,
+                    reasoningEffort: options.reasoningEffort)
                 var request = URLRequest(url: endpoint, timeoutInterval: 180)
                 request.httpMethod = "POST"
                 request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -652,9 +690,7 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
                         debugLog("preloaded \(model) in \(String(format: "%.1f", Date().timeIntervalSince(started)))s")
                         return
                     }
-                    if let field = Self.refusedField(in: fields, status: code, body: detail) {
-                        debugLog("endpoint refused \(field.rawValue) on preload (HTTP \(code)); retrying without it")
-                        disableField(field)
+                    if applyRefusal(sent: options, status: code, body: detail) {
                         httpEvent = .httpRetry
                         continue
                     }
@@ -670,16 +706,19 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
     /// The preload request: the system prompt, so the server's cache holds
     /// its prefix for the first real request, and the smallest user turn
     /// and answer that a chat completion can be made of.
-    static func preloadBody(model: String, systemPrompt: String, fields: Set<ChatField>) -> [String: Any] {
+    static func preloadBody(
+        model: String, systemPrompt: String, fields: Set<ChatField>,
+        reasoningEffort: ReasoningEffort = .none
+    ) -> [String: Any] {
         chatBody(model: model, messages: [
             ["role": "system", "content": systemPrompt],
             ["role": "user", "content": "."],
-        ], maxCompletionTokens: 1, fields: fields.subtracting([.stream]))
+        ], maxCompletionTokens: 1, fields: fields.subtracting([.stream]), reasoningEffort: reasoningEffort)
     }
 
     static func chatBody(
         model: String, messages: [[String: String]], maxCompletionTokens: Int,
-        fields: Set<ChatField>
+        fields: Set<ChatField>, reasoningEffort: ReasoningEffort = .none
     ) -> [String: Any] {
         var body: [String: Any] = [
             "model": model,
@@ -687,7 +726,7 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
             "messages": messages,
         ]
         if fields.contains(.reasoningEffort) {
-            body["reasoning_effort"] = "none"
+            body["reasoning_effort"] = reasoningEffort.rawValue
         }
         if fields.contains(.temperature) {
             body["temperature"] = 0
@@ -765,9 +804,11 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
             markDead()
             throw OpenAICompatError.badURL
         }
-        let fields = requestFields(streamed: onPartial != nil)
-        let streamed = fields.contains(.stream)
-        let body = Self.chatBody(model: model, messages: messages, maxCompletionTokens: 2000, fields: fields)
+        let options = requestOptions(streamed: onPartial != nil)
+        let streamed = options.fields.contains(.stream)
+        let body = Self.chatBody(
+            model: model, messages: messages, maxCompletionTokens: 2000,
+            fields: options.fields, reasoningEffort: options.reasoningEffort)
 
         var request = URLRequest(url: endpoint, timeoutInterval: 60)
         request.httpMethod = "POST"
@@ -797,11 +838,9 @@ final class OpenAICompatSession: LLMTranslator, @unchecked Sendable {
             var data = Data()
             for try await byte in bytes { data.append(byte) }
             let detail = String(decoding: data, as: UTF8.self)
-            // Each retry removes a field that this request actually sent.
-            // The session never re-enables fields, so there are at most three retries.
-            if let field = Self.refusedField(in: fields, status: http.statusCode, body: detail) {
-                debugLog("endpoint refused \(field.rawValue) (HTTP \(http.statusCode)); retrying without it")
-                disableField(field)
+            // Options only advance: none -> low -> omitted, or field removal.
+            // Each request chain therefore has at most four retries.
+            if applyRefusal(sent: options, status: http.statusCode, body: detail) {
                 timing.log(.httpRetry, httpAttempt: httpAttempt, historyPairs: historyPairs, status: status)
                 completionEvent = nil
                 return try await performChat(
