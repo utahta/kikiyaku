@@ -471,14 +471,8 @@ private struct HistoryContent: View {
         !state.translationReady
     }
 
-    /// After an utterance finalizes and before the next one starts, the
-    /// finished utterance stays in the live slot (source on top, translation
-    /// below) instead of moving into the history immediately — the momentary
-    /// blank between utterances read as a distracting flicker. It moves down
-    /// as soon as the next volatile text arrives. Display-only: the utterance
-    /// is already in the model/history and the JSONL is unaffected.
     private var lingering: Utterance? {
-        state.isRunning && state.volatileText.isEmpty ? state.utterances.last : nil
+        state.lingeringLiveUtterance
     }
 
     private var historyUtterances: [Utterance] {
@@ -501,6 +495,10 @@ private struct HistoryContent: View {
             || (state.translationReady && !state.volatileText.isEmpty)
     }
 
+    private var liveAreaVisible: Bool {
+        lingering != nil || !state.volatileText.isEmpty || provisionalSlotVisible
+    }
+
     var body: some View {
         if state.newestOnTop {
             newestOnTopLayout
@@ -509,42 +507,40 @@ private struct HistoryContent: View {
         }
     }
 
-    /// The translation line shown under the live text: while recognizing, the
-    /// provisional translation (spinner-first); while an utterance lingers,
-    /// that utterance's translation state (provisional with spinner → final).
     @ViewBuilder
     private var translationSlot: some View {
         if let lingering {
-            if lingering.translation != nil || lingering.partialTranslation != nil {
-                TranslationText(utterance: lingering, fontSize: state.fontSize, selectable: liveSourceSettled)
-            } else if lingering.translationSkipped {
-                Text(LF("panel.skippedConfidence", lingering.confidence.map { String(format: "%.2f", $0) } ?? "-"))
-                    .font(.system(size: max(8, state.fontSize * 0.72)))
-                    .foregroundStyle(.tertiary)
-            } else {
-                // No spinner without a live translation lane — nothing is
-                // coming, and a perpetual "translating" would lie. When a
-                // provisional stays without a final coming, dim and label it
-                // (same treatment as history rows).
-                let awaitingFinal =
-                    lingering.translationState(translating: state.translationReady) == .pending
-                if let provisional = lingering.provisionalTranslation {
-                    Text(provisional)
-                        .font(.system(size: state.fontSize))
-                        .multilineTextAlignment(.leading)
-                        // Dimmed while the final is still due — with the
-                        // spinner gone, the colour is what separates a
-                        // provisional from a settled translation.
-                        .foregroundStyle(.secondary)
-                        .selectable(liveSourceSettled)
-                } else if lingering.finalTranslationFailed {
-                    Text(L("translation.failed"))
-                        .font(.system(size: max(8, state.fontSize * 0.72)))
-                        .foregroundStyle(.tertiary)
-                } else if awaitingFinal {
-                    SkeletonLine(fontSize: state.fontSize)
+            let status = lingering.translationState(translating: state.translationReady)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if lingering.translation != nil || lingering.partialTranslation != nil {
+                        TranslationText(utterance: lingering, fontSize: state.fontSize, selectable: liveSourceSettled)
+                    } else if lingering.translationSkipped {
+                        Text(LF("panel.skippedConfidence", lingering.confidence.map { String(format: "%.2f", $0) } ?? "-"))
+                            .font(.system(size: max(8, state.fontSize * 0.72)))
+                            .foregroundStyle(.tertiary)
+                    } else if let provisional = lingering.provisionalTranslation {
+                        Text(provisional)
+                            .font(.system(size: state.fontSize))
+                            .multilineTextAlignment(.leading)
+                            .foregroundStyle(.secondary)
+                            .selectable(liveSourceSettled)
+                    } else if status == .failed {
+                        Text(L("translation.failed"))
+                            .font(.system(size: max(8, state.fontSize * 0.72)))
+                            .foregroundStyle(.tertiary)
+                    } else if status == .pending {
+                        SkeletonLine(fontSize: state.fontSize)
+                    }
+                    if status == .pending,
+                       lingering.partialTranslation != nil || lingering.provisionalTranslation != nil {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .accessibilityLabel(L("panel.translating"))
+                    }
                 }
-                if !awaitingFinal, lingering.provisionalTranslation != nil {
+                if status != .pending && status != .completed && status != .skipped,
+                   lingering.provisionalTranslation != nil {
                     Text(L("panel.provisionalKept"))
                         .font(.system(size: max(8, state.fontSize * 0.6)))
                         .foregroundStyle(.tertiary)
@@ -600,16 +596,8 @@ private struct HistoryContent: View {
         }
     }
 
-    /// Whether anything is still happening in the live region: an utterance
-    /// being spoken, or one finalized here and genuinely awaiting its
-    /// translation. A finished utterance that will never get one — this
-    /// session does not translate, the recognition was too poor to bother, the
-    /// translation failed for good — is done, and the rail must not keep
-    /// insisting otherwise.
     private var liveIsWorking: Bool {
-        if !state.volatileText.isEmpty { return true }
-        guard let lingering else { return false }
-        return lingering.translationState(translating: state.translationReady) == .pending
+        !state.volatileText.isEmpty
     }
 
     private var liveContent: some View {
@@ -632,13 +620,8 @@ private struct HistoryContent: View {
         }
     }
 
-    /// The live region's time column. A finalized utterance held here has a
-    /// time like any history row — it is the same utterance, just not moved
-    /// down yet, and skipping it left the newest utterance as the only one
-    /// without a timestamp for as long as the room stayed quiet. While an
-    /// utterance is still being spoken there is no final time to show, so the
-    /// column is merely held open: the text must not jump sideways at the
-    /// moment the utterance finalizes.
+    /// Reserve the time column during recognition so text does not shift
+    /// horizontally when the finalized source takes over.
     @ViewBuilder
     private var liveTime: some View {
         if let lingering {
@@ -655,10 +638,12 @@ private struct HistoryContent: View {
     /// history should read as one stream.
     private var newestOnTopLayout: some View {
         VStack(spacing: 0) {
-            liveArea
-                .padding(.horizontal, 10)
-                .padding(.top, 10)
-                .padding(.bottom, 8)
+            if liveAreaVisible {
+                liveArea
+                    .padding(.horizontal, 10)
+                    .padding(.top, 10)
+                    .padding(.bottom, 8)
+            }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(historyUtterances.reversed()) { utterance in
@@ -705,7 +690,7 @@ private struct HistoryContent: View {
                 }
                 // Nothing in progress and nothing lingering leaves only the
                 // held-open time column, so skip the row entirely.
-                if lingering != nil || !state.volatileText.isEmpty || provisionalSlotVisible {
+                if liveAreaVisible {
                     liveArea
                 }
             }

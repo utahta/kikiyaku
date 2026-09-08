@@ -176,7 +176,7 @@
 "settings.fontSize" = "文字サイズ";
 "settings.fontSizeCaption" = "訳文の文字サイズです。即時反映されます。";
 "settings.liveSourceText" = "認識中の原文を表示";
-"settings.liveSourceTextCaption" = "話している途中の発話を認識できたそばから表示します。訳文より先に出るので、聞き取りの確認に使えます。確定した発話も次の発話が始まるまではライブ枠に残り、履歴に移ると訳文だけになります。即時反映されます。";
+"settings.liveSourceTextCaption" = "話している途中の発話を認識できたそばから表示します。訳文より先に出るので、聞き取りの確認に使えます。一方向モードでは確定した原文と訳文も次の発話が始まるまでライブ枠に残ります。認識中のアニメーションは認識確定時に止まり、翻訳待ちは訳文側に表示します。履歴の原文表示は別の設定に従います。即時反映されます。";
 "settings.sourceText" = "履歴の原文を表示";
 "settings.sourceFontSize" = "原文の文字サイズ";
 "settings.sourceTextCaption" = "オフにすると履歴は訳文だけになります（行をクリックすればその発話の原文が開きます）。即時反映されます。";

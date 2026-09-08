@@ -176,7 +176,7 @@
 "settings.fontSize" = "Font size";
 "settings.fontSizeCaption" = "Font size of translations. Takes effect immediately.";
 "settings.liveSourceText" = "Show live recognition text";
-"settings.liveSourceTextCaption" = "Shows an utterance as it is being recognized. It appears before the translation, so it is where you check the words were heard correctly. A finalized utterance stays here until the next one begins, and leaves only its translation behind when it moves into the history. Takes effect immediately.";
+"settings.liveSourceTextCaption" = "Shows an utterance as it is being recognized, so you can check the words were heard correctly before the translation arrives. In one-way mode, the finalized source and translation stay in the live area until the next utterance begins. The recognition animation stops when recognition finalizes; translation progress is shown beside the translation. Source text in the history follows its own display setting. Takes effect immediately.";
 "settings.sourceText" = "Show source text in the history";
 "settings.sourceFontSize" = "Source text size";
 "settings.sourceTextCaption" = "Turning this off leaves translations alone in the history (click a row to open that utterance's source). Takes effect immediately.";
