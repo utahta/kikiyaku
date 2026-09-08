@@ -1,7 +1,7 @@
 import Foundation
 import Speech
 
-struct LanguageOption: Identifiable, Sendable {
+struct LanguageOption: Identifiable, Equatable, Sendable {
     let id: String     // BCP-47 (e.g. "en-US")
     let label: String  // display name (e.g. "English (United States)")
 }

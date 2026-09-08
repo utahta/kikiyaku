@@ -169,10 +169,6 @@ struct ProfileEditorSheet: View {
         Locale(identifier: draft.targetLocaleID).identifier(.bcp47)
     }
 
-    private func recognizable(_ option: LanguageOption) -> Bool {
-        supportedSourceIDs.contains(Locale(identifier: option.id).identifier(.bcp47))
-    }
-
     /// Swapping puts the current target into the recognition slot, so it is
     /// only allowed when that language is a SpeechTranscriber-supported locale
     /// (the target list is broader — translation targets are LLM-arbitrary).
@@ -369,11 +365,10 @@ struct ProfileEditorSheet: View {
             Text(L("settings.audioSource.both")).tag("both")
         } label: { HelpLabel(L("settings.audioSource"), help: L("settings.audioSourceCaption")) }
 
-        Picker(selection: $draft.sourceLocaleID) {
-            ForEach(sourceOptions) { option in
-                Text(option.label).tag(option.id)
-            }
-        } label: { HelpLabel(sourceLanguageLabel, help: languageCaption) }
+        ProfileLanguagePicker(
+            selection: $draft.sourceLocaleID, options: sourceOptions,
+            title: sourceLanguageLabel, help: languageCaption)
+        .equatable()
         .disabled(sourceOptions.isEmpty)
 
         // Transcription-only recognizes one language, so the second slot has
@@ -382,29 +377,11 @@ struct ProfileEditorSheet: View {
         // could release them would leave the warning asking for a change the
         // reader has no way to make.
         if draft.mode != .transcribe || !pairModesAvailable {
-            Picker(selection: $draft.targetLocaleID) {
-                // Split so that "the recognizer knows this one too" and "the
-                // model is on its own here" are visible in the list rather
-                // than only in the help text.
-                if draft.mode == .translate {
-                    Section(L("settings.language.target.recognizedSection")) {
-                        ForEach(targetOptions.filter { recognizable($0) }) {
-                            Text($0.label).tag($0.id)
-                        }
-                    }
-                    Section(L("settings.language.target.translationOnlySection")) {
-                        ForEach(targetOptions.filter { !recognizable($0) }) {
-                            Text($0.label).tag($0.id)
-                        }
-                    }
-                } else {
-                    ForEach(targetOptions) { option in
-                        Text(option.label).tag(option.id)
-                    }
-                }
-            } label: {
-                HelpLabel(targetLanguageLabel, help: targetLanguageCaption)
-            }
+            ProfileLanguagePicker(
+                selection: $draft.targetLocaleID, options: targetOptions,
+                title: targetLanguageLabel, help: targetLanguageCaption,
+                recognizedIDs: draft.mode == .translate ? supportedSourceIDs : nil)
+            .equatable()
             .disabled(targetOptions.isEmpty)
             // Bilingual transcription treats the two languages identically —
             // both recognized, neither translated — so an exchange between
