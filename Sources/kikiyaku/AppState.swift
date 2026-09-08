@@ -220,6 +220,12 @@ final class AppState {
     /// disables itself after consecutive failures. Read by the UI (pending "…"
     /// display) and by the confidence-skip judgment in the drain.
     var translationReady = false
+
+    /// Keep the latest finalized utterance visible between recognition results.
+    var lingeringLiveUtterance: Utterance? {
+        isRunning && volatileText.isEmpty ? utterances.last : nil
+    }
+
     /// A message the reader has to actually read — why a session stopped
     /// itself, most of all. The status line cannot carry one: it is half a
     /// panel wide with the button beside it, so anything longer than a phrase
@@ -350,17 +356,13 @@ final class AppState {
             provisionalGeneration += 1
         }
         insertByTime(utterance)
-        // The utterance ended: advance the channel's finalized watermark and
-        // drop every slot whose audio the finalize covered — including the
-        // pair's other recognizer's garbled reading of the same audio, which
-        // rarely finalizes at the same moment (left alone, its text and the
-        // bare spinner slot would outlive the finalized row). A volatile of a
-        // newer utterance (the other drain racing ahead) survives; slots with
-        // an unknown range (audioEnd 0) are cleared like before.
+        // A final's audio range can end before its own volatile range. That
+        // recognizer's slot is settled; only other recognizers need the range
+        // check to preserve newer speech.
         let watermark = max(finalizedThrough[utterance.channel] ?? 0, audioEnd)
         finalizedThrough[utterance.channel] = watermark
         for (key, value) in liveTexts where key.channel == utterance.channel {
-            if value.audioEnd <= watermark {
+            if key.language == utterance.language || value.audioEnd <= watermark {
                 liveTexts[key] = nil
             }
         }
