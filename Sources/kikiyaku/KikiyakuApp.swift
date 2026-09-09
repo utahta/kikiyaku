@@ -169,6 +169,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuItemValidation, 
         // the availability of the other profiles is judged against it.
         store.importMirrorIntoSelected()
         profileMenu.removeAllItems()
+        if let error = store.loadError {
+            let item = NSMenuItem(title: L("profiles.recovery.title"),
+                                  action: #selector(openSettings), keyEquivalent: "")
+            item.target = self
+            item.toolTip = error.message
+            profileMenu.addItem(item)
+            return
+        }
         let running = AppState.shared.phase != .idle
         for profile in store.profiles {
             let item = NSMenuItem(title: profile.name, action: #selector(selectProfile(_:)), keyEquivalent: "")

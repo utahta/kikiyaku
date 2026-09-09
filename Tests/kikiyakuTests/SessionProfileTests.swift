@@ -105,7 +105,7 @@ struct SessionProfileTests {
         let unconfigured = SessionProfile.unconfigured()
         #expect(!unconfigured.name.isEmpty)
         #expect(unconfigured.sameSettings(as: blank))
-        #expect(blank.glossary.isEmpty)
+        #expect(blank.glossaryID == nil)
     }
 
     @Test func newProfilesStartWithProvisionalTranslationDisabled() {
@@ -156,7 +156,7 @@ struct SessionProfileTests {
             """.utf8)
         let decoded = try JSONDecoder().decode([SessionProfile].self, from: data)
         #expect(decoded.count == 2)
-        #expect(decoded.allSatisfy { $0.glossary.isEmpty })
+        #expect(decoded.allSatisfy { $0.glossaryID == nil })
         var local = profile(model: "local-model", claudeModel: "claude-model")
         local.provisionalTranslation = true
         local = local.copy(
@@ -173,22 +173,23 @@ struct SessionProfileTests {
         #expect(decoded == [local, bilingual])
     }
 
-    @Test func aGlossarySurvivesPersistenceVerbatim() throws {
+    @Test func aGlossaryReferenceSurvivesPersistence() throws {
         var original = profile()
-        original.glossary = " deadline = 締め切り\nrelease = リリース\n"
+        original.glossaryID = UUID()
         let data = try JSONEncoder().encode(original)
         #expect(try JSONDecoder().decode(SessionProfile.self, from: data) == original)
     }
 
-    @Test func copiesKeepTheGlossaryAndEditsDoNotChangeLayout() {
+    @Test func copiesKeepTheGlossaryReferenceAndEditsDoNotChangeLayout() {
         var original = profile()
-        original.glossary = "deadline = 締め切り\nrelease = リリース"
+        let originalID = UUID()
+        original.glossaryID = originalID
         var copy = original.copy(id: UUID(), name: "copy")
-        #expect(copy.glossary == original.glossary)
+        #expect(copy.glossaryID == original.glossaryID)
         #expect(copy.sameSettings(as: original))
-        copy.glossary = "deadline = 期限"
+        copy.glossaryID = UUID()
         #expect(!copy.sameSettings(as: original))
         #expect(!copy.layoutDiffers(from: original))
-        #expect(original.glossary == "deadline = 締め切り\nrelease = リリース")
+        #expect(original.glossaryID == originalID)
     }
 }

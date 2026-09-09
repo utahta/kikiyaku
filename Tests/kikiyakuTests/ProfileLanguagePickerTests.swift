@@ -22,7 +22,7 @@ struct ProfileLanguagePickerTests {
         let selection = Binding(get: { draft.sourceLocaleID }, set: { draft.sourceLocaleID = $0 })
         let before = picker(selection)
         draft.name = "Renamed"
-        draft.glossary = "New glossary"
+        draft.glossaryID = UUID()
         draft.openAIModel = "New model"
         #expect(before == picker(selection))
     }

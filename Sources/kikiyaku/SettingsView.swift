@@ -92,15 +92,55 @@ struct HelpLabel: View {
 }
 
 struct SettingsView: View {
+    static func modeLabel(_ mode: SessionMode) -> String {
+        switch mode {
+        case .translate: L("settings.mode.translate")
+        case .bidirectional: L("settings.mode.bidirectional")
+        case .transcribe: L("settings.mode.transcribe")
+        case .bilingual: L("settings.mode.bilingual")
+        }
+    }
+
+    static func claudeModelLabel(_ id: String) -> String {
+        switch id {
+        case "claude-sonnet-5": L("settings.model.sonnet")
+        case "claude-opus-5": L("settings.model.opus")
+        case "claude-haiku-4-5-20251001": L("settings.model.haiku")
+        default: id
+        }
+    }
+
+    var body: some View {
+        if SessionProfileStore.shared.loadError != nil {
+            ProfileCatalogRecoveryView(store: .shared)
+        } else if let selected = SessionProfileStore.shared.selected {
+            LoadedSettingsView(selected: selected)
+        }
+    }
+}
+
+private struct LoadedSettingsView: View {
     /// The session settings live in the selected profile. This screen shows
     /// them and switches between profiles; changing them is the editor's job
     /// (ProfileEditorSheet), so there is exactly one place they are edited
     /// and nothing here to fall out of step with it. What stays in @State
     /// below is the display settings — global, not part of any profile.
     private var store: SessionProfileStore { .shared }
-    private var selected: SessionProfile { store.selected }
+    let selected: SessionProfile
 
-    @State private var editor: ProfileEditorContext?
+    @State private var sheet: Sheet?
+
+    private enum Sheet: Identifiable {
+        case profile(ProfileEditorContext)
+        case glossaries
+
+        var id: String {
+            switch self {
+            case .profile(let context): context.id.uuidString
+            case .glossaries: "glossaries"
+            }
+        }
+    }
 
     @State private var directoryPath = TranscriptStore.directory.path
     @State private var confidenceThreshold = Preferences.confidenceThreshold
@@ -135,24 +175,6 @@ struct SettingsView: View {
     /// the point of them.
     private var sessionLocked: Bool {
         AppState.shared.phase != .idle
-    }
-
-    static func modeLabel(_ mode: SessionMode) -> String {
-        switch mode {
-        case .translate: L("settings.mode.translate")
-        case .bidirectional: L("settings.mode.bidirectional")
-        case .transcribe: L("settings.mode.transcribe")
-        case .bilingual: L("settings.mode.bilingual")
-        }
-    }
-
-    static func claudeModelLabel(_ id: String) -> String {
-        switch id {
-        case "claude-sonnet-5": L("settings.model.sonnet")
-        case "claude-opus-5": L("settings.model.opus")
-        case "claude-haiku-4-5-20251001": L("settings.model.haiku")
-        default: id
-        }
     }
 
     // MARK: - Summary card
@@ -231,7 +253,7 @@ struct SettingsView: View {
 
     private var modelSummary: String {
         if selected.backend == "claude" {
-            return Self.claudeModelLabel(selected.claudeModel)
+            return SettingsView.claudeModelLabel(selected.claudeModel)
         }
         return selected.openAIModel.isEmpty ? "—" : selected.openAIModel
     }
@@ -247,7 +269,7 @@ struct SettingsView: View {
         if let problem = selected.setupProblem {
             return problem
         }
-        if case .unsupported(let error) = store.switchability(of: store.selectedID) {
+        if case .unsupported(let error) = store.switchability(of: selected.id) {
             return error
         }
         return nil
@@ -271,7 +293,7 @@ struct SettingsView: View {
         alert.buttons[0].hasDestructiveAction = true
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         do {
-            try store.delete(store.selectedID)
+            try store.delete(selected.id)
         } catch {
             showProfileError(error)
         }
@@ -348,9 +370,9 @@ struct SettingsView: View {
                         // Opened from the button's action, so that the key is
                         // read from the Keychain exactly once per press (see
                         // ProfileEditorContext).
-                        Button(L("settings.profiles.edit")) { editor = .edit(selected) }
+                        Button(L("settings.profiles.edit")) { sheet = .profile(.edit(selected)) }
                             .controlSize(.small)
-                        Button(L("settings.profiles.new")) { editor = .new() }
+                        Button(L("settings.profiles.new")) { sheet = .profile(.new()) }
                             .controlSize(.small)
                         if let problem = selectedProfileProblem {
                             HelpTip(
@@ -379,9 +401,18 @@ struct SettingsView: View {
                 // small.
                 GroupBox {
                     Grid(alignment: .leading, horizontalSpacing: 8, verticalSpacing: 5) {
-                        summaryRow(modeSymbol, Self.modeLabel(selected.mode))
+                        summaryRow(modeSymbol, SettingsView.modeLabel(selected.mode))
                         summaryRow(audioSourceSymbol, audioSourceLabel)
                         summaryRow("globe", languagesSummary)
+                        summaryRow("text.book.closed", LF("glossaries.summary", store.glossaryName(for: selected)))
+                        if !translationActive, selected.glossaryID != nil {
+                            GridRow {
+                                Color.clear.frame(width: 16, height: 1)
+                                Text(L("glossaries.transcriptionCaption"))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
                         if translationActive {
                             summaryRow("server.rack", backendSummary)
                             summaryRow("cpu", modelSummary)
@@ -399,6 +430,8 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(4)
                 }
+
+                Button(L("glossaries.manage")) { sheet = .glossaries }
 
                 // The CLI's location is a fact about this machine, not about
                 // a profile, so it stays out of the editor. Shown under the
@@ -588,8 +621,13 @@ struct SettingsView: View {
             // model name and a language pair without wrapping.
             .frame(width: 560)
         }
-        .sheet(item: $editor) { context in
-            ProfileEditorSheet(context: context) { editor = nil }
+        .sheet(item: $sheet) { presented in
+            switch presented {
+            case .profile(let context):
+                ProfileEditorSheet(context: context) { sheet = nil }
+            case .glossaries:
+                GlossaryManagerView(store: store) { sheet = nil }
+            }
         }
         // The record button asks for the editor from outside this window.
         // Both hooks are needed: .task for a window created by the request,
@@ -604,8 +642,8 @@ struct SettingsView: View {
         guard AppState.shared.pendingProfileEdit else { return }
         AppState.shared.pendingProfileEdit = false
         // A sheet already open keeps its draft; the request is satisfied.
-        if editor == nil {
-            editor = .edit(selected)
+        if sheet == nil {
+            sheet = .profile(.edit(selected))
         }
     }
 
