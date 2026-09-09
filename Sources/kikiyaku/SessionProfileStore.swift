@@ -2,15 +2,8 @@ import Foundation
 import Observation
 import Speech
 
-/// Everything that decides what the next session does — what it listens to,
-/// which languages it recognizes, what it does with the result and through
-/// which backend — under one name. The display settings are not in here: they
-/// change how a transcript looks, not what a session is, and switching to
-/// "English meeting" should not also change the font.
-///
-/// API keys are deliberately absent. They live in the Keychain per endpoint,
-/// so a profile pointing at an endpoint finds its key waiting there, and the
-/// profile records (which sit in UserDefaults, in plain text) never carry one.
+/// Session configuration only; display settings and endpoint-scoped API keys
+/// remain outside profiles.
 struct SessionProfile: Codable, Identifiable, Hashable, Sendable {
     let id: UUID
     var name: String
@@ -23,94 +16,50 @@ struct SessionProfile: Codable, Identifiable, Hashable, Sendable {
     var openAIModel: String
     var claudeModel: String
     var provisionalTranslation: Bool
-    var glossary: String = ""
+    var glossaryID: UUID?
 
-    /// Whether switching from `other` to this profile changes how the panel
-    /// reads its rows — the mode, or the language pair. A backend or audio
-    /// input difference leaves every row looking exactly as it did.
     func layoutDiffers(from other: SessionProfile) -> Bool {
         mode != other.mode
             || sourceLocaleID != other.sourceLocaleID
             || targetLocaleID != other.targetLocaleID
     }
 
-    /// The same settings under a different identity.
     func copy(id: UUID, name: String) -> SessionProfile {
         SessionProfile(
-            id: id,
-            name: name,
-            mode: mode,
-            audioSource: audioSource,
-            sourceLocaleID: sourceLocaleID,
-            targetLocaleID: targetLocaleID,
-            backend: backend,
-            openAIBaseURL: openAIBaseURL,
-            openAIModel: openAIModel,
-            claudeModel: claudeModel,
-            provisionalTranslation: provisionalTranslation,
-            glossary: glossary
-        )
+            id: id, name: name, mode: mode, audioSource: audioSource,
+            sourceLocaleID: sourceLocaleID, targetLocaleID: targetLocaleID,
+            backend: backend, openAIBaseURL: openAIBaseURL, openAIModel: openAIModel,
+            claudeModel: claudeModel, provisionalTranslation: provisionalTranslation,
+            glossaryID: glossaryID)
     }
 
-    /// The same fields, ignoring identity — what "the CLI changed something"
-    /// and "this old profile matches the current settings" both compare.
     func sameSettings(as other: SessionProfile) -> Bool {
         copy(id: other.id, name: other.name) == other
     }
 
-    /// The locales a session with this profile has to recognize, canonical
-    /// BCP-47 so an `en_US` left behind by `defaults write` or an older
-    /// version is not mistaken for an unsupported language. The rule is the
-    /// settings screen's, not the engine's: the engine drops back to one
-    /// language when the pair is the same language twice, but the point here
-    /// is that a profile cannot reach a configuration the screen refuses.
+    /// The editor validates the pair even when the engine would collapse two
+    /// equivalent languages to one recognition lane.
     var recognizedLocaleIDs: [String] {
         let ids = mode.isBidirectional ? [sourceLocaleID, targetLocaleID] : [sourceLocaleID]
         return ids.map { Locale(identifier: $0).identifier(.bcp47) }
     }
 
-    /// What a brand-new profile starts as. The text fields are empty — a new
-    /// profile has no endpoint until one is chosen or a preset fills it in,
-    /// and an empty endpoint also means the editor has no key to look up, so
-    /// opening it touches nothing. The pickers cannot be empty, so they hold
-    /// the app's defaults. Not the mirror keys: those describe the selected
-    /// profile, and a new one built from them would carry its leftovers.
+    /// New profiles must not inherit the selected profile's mirror settings.
     static func blank() -> SessionProfile {
         SessionProfile(
-            id: UUID(),
-            name: "",
-            mode: .translate,
-            audioSource: "system",
-            sourceLocaleID: "en-US",
-            targetLocaleID: "ja-JP",
-            backend: "openai",
-            openAIBaseURL: "",
-            openAIModel: "",
-            claudeModel: "claude-sonnet-5",
-            provisionalTranslation: false
-        )
+            id: UUID(), name: "", mode: .translate, audioSource: "system",
+            sourceLocaleID: "en-US", targetLocaleID: "ja-JP", backend: "openai",
+            openAIBaseURL: "", openAIModel: "", claudeModel: "claude-sonnet-5",
+            provisionalTranslation: false)
     }
 
-    /// The one profile a fresh install starts with: blank, under a name that
-    /// says so. Translating rather than transcribing, so that the first press
-    /// of the record button leads into the editor instead of quietly running
-    /// without the feature the app is named for.
     static func unconfigured() -> SessionProfile {
         var profile = blank()
         profile.name = L("profiles.unconfigured")
         return profile
     }
 
-    /// What is missing for a session to start with this profile, or nil.
-    /// The single rule the editor's Save and the record button both apply,
-    /// so that the two cannot disagree about what "configured" means.
-    /// Transcription needs no LLM at all; the translating modes need a model,
-    /// and the OpenAI-compatible backend an endpoint that parses as one.
-    ///
-    /// Not covered: the name (a saving concern, not a starting one), the
-    /// languages (the engine checks them against the recognizer at start),
-    /// the claude binary (a fact about the machine, not the profile), and
-    /// the API key (Ollama and LM Studio need none, so it cannot be required).
+    /// Transcription needs no backend. API keys are optional for local servers.
     var setupProblem: ProfileError? {
         guard mode.translates else { return nil }
         switch backend {
@@ -124,52 +73,9 @@ struct SessionProfile: Codable, Identifiable, Hashable, Sendable {
         }
         return nil
     }
-
-    /// The current mirror keys, read back as a profile.
-    static func fromPreferences(id: UUID, name: String) -> SessionProfile {
-        SessionProfile(
-            id: id,
-            name: name,
-            mode: Preferences.sessionMode,
-            audioSource: Preferences.audioSource,
-            sourceLocaleID: Preferences.sourceLocaleID,
-            targetLocaleID: Preferences.targetLocaleID,
-            backend: Preferences.translationBackend,
-            openAIBaseURL: Preferences.openAIBaseURL,
-            openAIModel: Preferences.openAIModel,
-            claudeModel: Preferences.claudeModel,
-            provisionalTranslation: Preferences.provisionalTranslationEnabled,
-            glossary: Preferences.glossary
-        )
-    }
 }
 
-extension SessionProfile {
-    private enum CodingKeys: String, CodingKey {
-        case id, name, mode, audioSource, sourceLocaleID, targetLocaleID
-        case backend, openAIBaseURL, openAIModel, claudeModel, provisionalTranslation, glossary
-    }
-
-    init(from decoder: any Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        id = try values.decode(UUID.self, forKey: .id)
-        name = try values.decode(String.self, forKey: .name)
-        mode = try values.decode(SessionMode.self, forKey: .mode)
-        audioSource = try values.decode(String.self, forKey: .audioSource)
-        sourceLocaleID = try values.decode(String.self, forKey: .sourceLocaleID)
-        targetLocaleID = try values.decode(String.self, forKey: .targetLocaleID)
-        backend = try values.decode(String.self, forKey: .backend)
-        openAIBaseURL = try values.decode(String.self, forKey: .openAIBaseURL)
-        openAIModel = try values.decode(String.self, forKey: .openAIModel)
-        claudeModel = try values.decode(String.self, forKey: .claudeModel)
-        provisionalTranslation = try values.decode(Bool.self, forKey: .provisionalTranslation)
-        // Profiles saved before glossary support have no glossary key.
-        glossary = try values.decodeIfPresent(String.self, forKey: .glossary) ?? ""
-    }
-}
-
-/// Why a profile cannot be used right now, in words the UI shows as they are.
-enum ProfileError: Error {
+enum ProfileError: Error, Equatable {
     case emptyName
     case duplicateName
     case lastProfile
@@ -179,6 +85,15 @@ enum ProfileError: Error {
     case notSelected
     case emptyModel
     case invalidURL
+    case missingGlossary
+    case emptyGlossaryName
+    case duplicateGlossaryName
+    case glossaryInUse(String)
+    case catalogUnreadable
+    case catalogVersion(Int)
+    case saveFailed
+    case backupRequired
+    case backupFailed
 
     var message: String {
         switch self {
@@ -191,16 +106,20 @@ enum ProfileError: Error {
         case .notSelected: L("profiles.error.notSelected")
         case .emptyModel: L("profiles.error.emptyModel")
         case .invalidURL: L("profiles.error.invalidURL")
+        case .missingGlossary: L("glossaries.error.missing")
+        case .emptyGlossaryName: L("glossaries.error.emptyName")
+        case .duplicateGlossaryName: L("glossaries.error.duplicateName")
+        case .glossaryInUse(let names): LF("glossaries.error.inUse", names)
+        case .catalogUnreadable: L("profiles.error.catalogUnreadable")
+        case .catalogVersion(let version): LF("profiles.error.catalogVersion", version)
+        case .saveFailed: L("profiles.error.saveFailed")
+        case .backupRequired: L("profiles.error.backupRequired")
+        case .backupFailed: L("profiles.error.backupFailed")
         }
     }
 }
 
-/// Whether a profile can be switched to, and if not, what stands in the way.
-/// Two kinds of "no": `blocked` is about the moment (a session is running, an
-/// unsaved transcript would be swept away), `unsupported` is about the profile
-/// (a language the recognizer does not know). The menu bar refuses both; the
-/// settings screen accepts an unsupported profile, because selecting it is
-/// the only way to repair it.
+/// Unsupported profiles remain selectable in settings so they can be repaired.
 enum ProfileSwitchability {
     case available
     case unsupported(ProfileError)
@@ -214,330 +133,342 @@ enum ProfileSwitchability {
     }
 }
 
-/// The one place profiles are read, written, selected and mirrored. Exactly
-/// one profile is selected at all times and the settings screen edits that
-/// profile directly — there is no "apply" step that copies a snapshot into
-/// live settings, and so nothing for the two to drift apart from.
-///
-/// The individual keys the engine reads at start (`sourceLocaleID`,
-/// `openAIModel` and so on) stay in UserDefaults as a mirror of the selected
-/// profile. The engine is untouched by all this, and `defaults write` still
-/// works: a value written to a mirror key is read back as an edit to the
-/// selected profile the next time the store looks (launch, opening the
-/// settings, opening the profile menu).
+/// Owns both sides of glossary references. Catalog persistence precedes mirror
+/// publication so an interrupted write can be repaired on the next launch.
 @MainActor @Observable
 final class SessionProfileStore {
     static let shared = SessionProfileStore()
+    static let catalogKey = "sessionProfileCatalog"
 
-    private(set) var profiles: [SessionProfile] = []
-    private(set) var selectedID = UUID()
-
-    var selected: SessionProfile {
-        profiles.first { $0.id == selectedID } ?? profiles[0]
-    }
-
-    /// The recognizer's locales, canonical BCP-47. Empty until loaded — and an
-    /// empty set means "not known yet", never "nothing is supported": a
-    /// profile is judged unsupported only once `capabilitiesLoaded` is true.
+    private var catalog: SessionProfileCatalog?
+    private(set) var loadError: ProfileError?
+    private(set) var glossaryNotice: String?
     private(set) var supportedLocaleIDs: Set<String> = []
     private(set) var capabilitiesLoaded = false
+    private var recoveryBackup: Data?
 
-    private static let profilesKey = "sessionProfiles"
-    private static let selectedKey = "selectedSessionProfileID"
-    private static let schemaVersionKey = "sessionProfilesSchemaVersion"
-    private static let schemaVersion = 1
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let sessionActive: () -> Bool
+    @ObservationIgnored private let unsavedTranscript: () -> Bool
+    @ObservationIgnored private let layoutChanged: () -> Void
 
-    /// The keys the engine reads. Their presence is what tells an existing
-    /// installation from a fresh one when no profile record exists yet.
-    private static let mirrorKeys = [
-        "translationEnabled", "bidirectionalTranslation", "audioSource",
-        "sourceLocaleID", "targetLocaleID", "translationBackend",
-        "openAIBaseURL", "openAIModel", "claudeModel", "provisionalTranslation",
-        "glossary",
-    ]
+    var profiles: [SessionProfile] { catalog?.profiles ?? [] }
+    var selectedID: UUID? { catalog?.selectedID }
+    var selected: SessionProfile? { catalog?.selected }
+    var glossaries: [Glossary] { catalog?.glossaries ?? [] }
+    var hasRecoveryBackup: Bool { recoveryBackup != nil }
 
-    private init() {
-        let defaults = UserDefaults.standard
-        if defaults.integer(forKey: Self.schemaVersionKey) < Self.schemaVersion {
-            if Self.isFreshInstall(defaults) {
-                startUnconfigured()
+    init(defaults: UserDefaults = .standard,
+         sessionActive: @escaping () -> Bool = { AppState.shared.phase != .idle },
+         unsavedTranscript: @escaping () -> Bool = { Engine.shared.hasUnsavedTranscript },
+         layoutChanged: @escaping () -> Void = { AppDelegate.applySettingsChange() }) {
+        self.defaults = defaults
+        self.sessionActive = sessionActive
+        self.unsavedTranscript = unsavedTranscript
+        self.layoutChanged = layoutChanged
+        do {
+            if defaults.object(forKey: Self.catalogKey) != nil {
+                guard let data = defaults.data(forKey: Self.catalogKey) else {
+                    throw ProfileError.catalogUnreadable
+                }
+                struct Version: Decodable { let schemaVersion: Int }
+                let version = try JSONDecoder().decode(Version.self, from: data).schemaVersion
+                guard version == 2 else { throw ProfileError.catalogVersion(version) }
+                var decoded = try JSONDecoder().decode(SessionProfileCatalog.self, from: data)
+                try decoded.validate()
+                if decoded.selected == nil {
+                    decoded.selectedID = decoded.profiles[0].id
+                    decoded.mirrorBaseline = MirrorSettings(defaults: defaults)
+                    try persist(decoded)
+                } else {
+                    catalog = decoded
+                    importMirrorIntoSelected(syncLayout: false)
+                }
             } else {
-                migrate()
+                try persist(SessionProfileCatalog.migrate(defaults: defaults))
             }
-            return
-        }
-        if let data = defaults.data(forKey: Self.profilesKey),
-           let decoded = try? JSONDecoder().decode([SessionProfile].self, from: data),
-           !decoded.isEmpty {
-            profiles = decoded
-        } else {
-            // Empty or unreadable: the mirror still describes a working
-            // configuration, so rebuild one profile from it rather than
-            // start from nothing.
-            profiles = [.fromPreferences(id: UUID(), name: L("profiles.migrated.default"))]
-            persist()
-        }
-        if let stored = defaults.string(forKey: Self.selectedKey),
-           let id = UUID(uuidString: stored),
-           profiles.contains(where: { $0.id == id }) {
-            selectedID = id
-            // The mirror may have been edited from the CLI since the last
-            // look. Read it back before anything else writes over it — the
-            // other order would silently lose the edit.
-            importMirrorIntoSelected(syncLayout: false)
-        } else {
-            // The selected profile is gone (deleted through `defaults`, say).
-            // The mirror holds *its* values, not the first profile's, so this
-            // is the one case where the mirror is not read back: importing
-            // here would overwrite the first profile with a dead one's settings.
-            selectedID = profiles[0].id
-            persistSelection()
-            writeMirror(selected)
+        } catch {
+            loadError = error as? ProfileError ?? .catalogUnreadable
         }
     }
 
-    // MARK: - Migration
-
-    /// Nothing of an earlier version is present: no old profile key (the key
-    /// itself — an empty array stored there is evidence of use) and none of
-    /// the mirror keys. Anything saved makes this an existing installation,
-    /// whose saved values are carried over by `migrate`. What is deliberately
-    /// not carried over is an old default that was never saved: a person who
-    /// ran on the old OpenAI default without touching the settings has no
-    /// keys and starts unconfigured, which is the point of this change.
-    private static func isFreshInstall(_ defaults: UserDefaults) -> Bool {
-        guard defaults.object(forKey: Preferences.legacyProfilesKey) == nil else { return false }
-        return mirrorKeys.allSatisfy { defaults.object(forKey: $0) == nil }
+    func glossary(id: UUID) -> Glossary? {
+        glossaries.first { $0.id == id }
     }
 
-    /// A fresh install's one profile. The mirror is not written: the getters'
-    /// defaults already read as this profile, and a mirror key written before
-    /// the version stamp would make a launch that died in between look like
-    /// an existing installation on the next try.
-    private func startUnconfigured() {
-        let profile = SessionProfile.unconfigured()
-        profiles = [profile]
-        selectedID = profile.id
-        persist()
-        persistSelection()
-        UserDefaults.standard.set(Self.schemaVersion, forKey: Self.schemaVersionKey)
-    }
-
-    /// First launch with this schema. The old backend-only profiles are kept
-    /// as profiles, each completed with the current session settings; the
-    /// selection goes to whichever of them matches the current backend
-    /// configuration, or to a new profile made from the current settings when
-    /// none does. The old key is left in place for a version that still reads
-    /// it.
-    private func migrate() {
-        let current = SessionProfile.fromPreferences(id: UUID(), name: "")
-        var converted: [SessionProfile] = []
-        for old in Preferences.backendProfiles {
-            var profile = current.copy(id: UUID(), name: Self.uniqueName(old.name, among: converted))
-            profile.backend = old.backend
-            profile.openAIBaseURL = old.openAIBaseURL
-            profile.openAIModel = old.openAIModel
-            profile.claudeModel = old.claudeModel
-            converted.append(profile)
+    func backUpCatalog(to url: URL) throws(ProfileError) {
+        let data = try recoveryData()
+        do {
+            try data.write(to: url, options: .atomic)
+        } catch {
+            throw .backupFailed
         }
-        if let match = converted.first(where: { $0.sameSettings(as: current) }) {
-            selectedID = match.id
-        } else {
-            let base = converted.isEmpty ? L("profiles.migrated.default") : L("profiles.migrated.current")
-            var profile = current
-            profile.name = Self.uniqueName(base, among: converted)
-            converted.append(profile)
-            selectedID = profile.id
-        }
-        profiles = converted
-        // Profiles first, selection second, the version stamp last: a launch
-        // that dies between them finds no stamp and simply migrates again.
-        persist()
-        persistSelection()
-        UserDefaults.standard.set(Self.schemaVersion, forKey: Self.schemaVersionKey)
+        recoveryBackup = data
     }
 
-    // MARK: - Capabilities
+    /// Recovery is explicit and requires a backup of the values being replaced.
+    func restoreLegacyAfterBackup() throws(ProfileError) {
+        guard !sessionActive() else { throw .sessionRunning }
+        guard loadError != nil, let recoveryBackup,
+              recoveryBackup == (try recoveryData()) else { throw .backupRequired }
+        let hasLegacy = ["sessionProfiles", "sessionProfilesSchemaVersion", "backendProfiles"]
+            .contains { defaults.object(forKey: $0) != nil }
+        let restored: SessionProfileCatalog = hasLegacy
+            ? .migrate(defaults: defaults) : .fresh(defaults: defaults)
+        try persist(restored)
+        loadError = nil
+        glossaryNotice = nil
+        self.recoveryBackup = nil
+        layoutChanged()
+    }
 
-    /// Asks the recognizer which locales it supports. Until this has run,
-    /// every profile is judged switchable as far as languages go.
+    private func recoveryData() throws(ProfileError) -> Data {
+        let keys = [Self.catalogKey, "sessionProfiles", "selectedSessionProfileID",
+                    "sessionProfilesSchemaVersion", "backendProfiles"] + MirrorSettings.keys
+        var values: [String: Any] = [:]
+        for key in keys { values[key] = defaults.object(forKey: key) }
+        do {
+            return try PropertyListSerialization.data(fromPropertyList: values, format: .xml, options: 0)
+        } catch {
+            throw .backupFailed
+        }
+    }
+
+    func profilesUsingGlossary(_ id: UUID) -> [SessionProfile] {
+        profiles.filter { $0.glossaryID == id }
+    }
+
+    @discardableResult
+    func addGlossary(name: String, text: String) throws(ProfileError) -> UUID {
+        let id = UUID()
+        try transact { (candidate: inout SessionProfileCatalog) throws(ProfileError) in
+            let name = try Self.validatedGlossaryName(name, excluding: nil, in: candidate)
+            candidate.glossaries.append(Glossary(id: id, name: name, text: text))
+        }
+        return id
+    }
+
+    func updateGlossary(_ glossary: Glossary) throws(ProfileError) {
+        try transact { (candidate: inout SessionProfileCatalog) throws(ProfileError) in
+            guard let index = candidate.glossaries.firstIndex(where: { $0.id == glossary.id }) else {
+                throw .missingGlossary
+            }
+            var glossary = glossary
+            glossary.name = try Self.validatedGlossaryName(glossary.name, excluding: glossary.id, in: candidate)
+            candidate.glossaries[index] = glossary
+        }
+    }
+
+    func deleteGlossary(_ id: UUID) throws(ProfileError) {
+        try transact { (candidate: inout SessionProfileCatalog) throws(ProfileError) in
+            guard candidate.glossaries.contains(where: { $0.id == id }) else { throw .missingGlossary }
+            let users = candidate.profiles.filter { $0.glossaryID == id }
+            guard users.isEmpty else { throw .glossaryInUse(users.map(\.name).joined(separator: ", ")) }
+            candidate.glossaries.removeAll { $0.id == id }
+        }
+    }
+
+    func dismissGlossaryNotice() {
+        glossaryNotice = nil
+    }
+
+    private static func validatedGlossaryName(_ name: String, excluding id: UUID?,
+                                              in catalog: SessionProfileCatalog) throws(ProfileError) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { throw .emptyGlossaryName }
+        guard !catalog.glossaries.contains(where: { $0.id != id && $0.name == trimmed }) else {
+            throw .duplicateGlossaryName
+        }
+        return trimmed
+    }
+
+    func glossaryName(for profile: SessionProfile) -> String {
+        guard let id = profile.glossaryID else { return L("glossaries.none") }
+        return glossary(id: id)?.name ?? L("glossaries.missing")
+    }
+
+    func glossaryForNextSession() throws(ProfileError) -> String {
+        if let loadError { throw loadError }
+        guard let catalog, let profile = catalog.selected else { throw .catalogUnreadable }
+        guard profile.mode.translates else { return "" }
+        guard let text = catalog.text(for: profile) else { throw .missingGlossary }
+        return text
+    }
+
     func loadCapabilities() async {
         let locales = await SpeechTranscriber.supportedLocales
         supportedLocaleIDs = Set(locales.map { $0.identifier(.bcp47) })
         capabilitiesLoaded = true
     }
 
-    // MARK: - Selection
-
-    /// Whether `id` can be switched to now. Decided before anything is written,
-    /// which is what makes the unsaved-transcript check a refusal rather than
-    /// the silent no-op it would be inside applySettingsChange.
     func switchability(of id: UUID) -> ProfileSwitchability {
-        guard let profile = profiles.first(where: { $0.id == id }) else { return .available }
-        if AppState.shared.phase != .idle {
-            return .blocked(.sessionRunning)
+        if let loadError { return .blocked(loadError) }
+        guard let profile = profiles.first(where: { $0.id == id }), let selected else {
+            return .blocked(.notSelected)
         }
-        if profile.layoutDiffers(from: selected), Engine.shared.hasUnsavedTranscript {
+        if sessionActive() { return .blocked(.sessionRunning) }
+        if profile.layoutDiffers(from: selected), unsavedTranscript() {
             return .blocked(.unsavedTranscript)
         }
         if capabilitiesLoaded,
            let missing = profile.recognizedLocaleIDs.first(where: { !supportedLocaleIDs.contains($0) }) {
             return .unsupported(.unsupportedLanguage(Preferences.option(id: missing).label))
         }
+        if profile.mode.translates, let id = profile.glossaryID, glossary(id: id) == nil {
+            return .unsupported(.missingGlossary)
+        }
         return .available
     }
 
-    /// Makes `id` the selected profile. Refuses only what `switchability`
-    /// calls blocked; an unsupported profile goes through, so that the
-    /// settings screen can show it and let its languages be fixed.
     func select(_ id: UUID) throws(ProfileError) {
-        guard id != selectedID, let profile = profiles.first(where: { $0.id == id }) else { return }
-        if case .blocked(let error) = switchability(of: id) {
-            throw error
-        }
-        let previous = selected
-        // The whole profile goes to the mirror in one go before the selection
-        // moves: writing field by field would let an observer see a pair that
-        // is briefly half one profile and half the other.
-        writeMirror(profile)
-        selectedID = id
-        persistSelection()
-        if profile.layoutDiffers(from: previous) {
-            AppDelegate.applySettingsChange()
+        try transact { (candidate: inout SessionProfileCatalog) throws(ProfileError) in
+            guard let target = candidate.profiles.first(where: { $0.id == id }),
+                  let current = candidate.selected else { throw .notSelected }
+            guard id != current.id else { return }
+            try checkSelection(from: current, to: target)
+            candidate.selectedID = id
         }
     }
 
-    // MARK: - Editing
-
-    /// Replaces the selected profile with what the editor saved. Owns the one
-    /// side effect a save has beyond persistence: re-syncing the panel layout
-    /// when the mode or a language changed, and not otherwise (a backend edit
-    /// must not clear the history).
-    ///
-    /// The editor is modal to the settings window only, so by the time it
-    /// saves, the selection may have moved (menu bar) or a session may have
-    /// started (panel). Both are refused here rather than ignored: a save that
-    /// silently did nothing would close the editor looking like a success.
     func update(_ profile: SessionProfile) throws(ProfileError) {
-        guard profile.id == selectedID, let index = profiles.firstIndex(where: { $0.id == profile.id }) else {
-            throw .notSelected
-        }
-        guard AppState.shared.phase == .idle else { throw .sessionRunning }
-        var profile = profile
-        profile.name = try Self.validatedName(profile.name, excluding: profile.id, among: profiles)
-        let previous = profiles[index]
-        guard profile != previous else { return }
-        profiles[index] = profile
-        persist()
-        writeMirror(profile)
-        if profile.layoutDiffers(from: previous) {
-            AppDelegate.applySettingsChange()
+        try transact { (candidate: inout SessionProfileCatalog) throws(ProfileError) in
+            guard profile.id == candidate.selectedID,
+                  let index = candidate.profiles.firstIndex(where: { $0.id == profile.id }) else {
+                throw .notSelected
+            }
+            guard !sessionActive() else { throw .sessionRunning }
+            var profile = profile
+            profile.name = try Self.validatedName(profile.name, excluding: profile.id,
+                                                  among: candidate.profiles)
+            try Self.validateReference(profile, in: candidate)
+            candidate.profiles[index] = profile
         }
     }
 
-    /// Adds `profile` under a fresh ID and selects it. The ID the editor built
-    /// its draft with is not trusted — taking it as given would let two
-    /// profiles share one. Throws when the selection would be blocked, in
-    /// which case nothing is added.
     @discardableResult
     func add(_ profile: SessionProfile) throws(ProfileError) -> UUID {
-        guard AppState.shared.phase == .idle else { throw .sessionRunning }
-        let name = try Self.validatedName(profile.name, excluding: nil, among: profiles)
-        let added = profile.copy(id: UUID(), name: name)
-        profiles.append(added)
-        persist()
-        do {
-            try select(added.id)
-        } catch {
-            profiles.removeAll { $0.id == added.id }
-            persist()
-            throw error
+        let id = UUID()
+        try transact { (candidate: inout SessionProfileCatalog) throws(ProfileError) in
+            guard !sessionActive() else { throw .sessionRunning }
+            let name = try Self.validatedName(profile.name, excluding: nil, among: candidate.profiles)
+            let added = profile.copy(id: id, name: name)
+            try Self.validateReference(added, in: candidate)
+            if let previous = candidate.selected { try checkSelection(from: previous, to: added) }
+            candidate.profiles.append(added)
+            candidate.selectedID = id
         }
-        return added.id
+        return id
     }
 
-    /// The name as it is stored: trimmed, non-empty, and unlike every other
-    /// profile's. Trimming before the comparison is what keeps "foo " from
-    /// slipping past the rule that "foo" is taken.
-    private static func validatedName(
-        _ name: String, excluding id: UUID?, among profiles: [SessionProfile]
-    ) throws(ProfileError) -> String {
+    func delete(_ id: UUID) throws(ProfileError) {
+        try transact { (candidate: inout SessionProfileCatalog) throws(ProfileError) in
+            guard !sessionActive() else { throw .sessionRunning }
+            guard candidate.profiles.count > 1 else { throw .lastProfile }
+            guard let index = candidate.profiles.firstIndex(where: { $0.id == id }) else { return }
+            if id == candidate.selectedID {
+                let successor = candidate.profiles[index == 0 ? 1 : index - 1]
+                try checkSelection(from: candidate.profiles[index], to: successor)
+                candidate.selectedID = successor.id
+            }
+            candidate.profiles.remove(at: index)
+        }
+    }
+
+    private func checkSelection(from previous: SessionProfile, to next: SessionProfile) throws(ProfileError) {
+        guard !sessionActive() else { throw .sessionRunning }
+        if next.layoutDiffers(from: previous), unsavedTranscript() { throw .unsavedTranscript }
+    }
+
+    private static func validatedName(_ name: String, excluding id: UUID?,
+                                      among profiles: [SessionProfile]) throws(ProfileError) -> String {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { throw .emptyName }
         guard !profiles.contains(where: { $0.id != id && $0.name == trimmed }) else { throw .duplicateName }
         return trimmed
     }
 
-    /// Removes a profile. Deleting the selected one hands the selection to its
-    /// neighbour (the one before it, or the one after for the first) through
-    /// the ordinary `select`, so the mirror and the layout are updated the
-    /// same way a switch updates them — and refused for the same reasons.
-    func delete(_ id: UUID) throws(ProfileError) {
-        guard profiles.count > 1 else { throw .lastProfile }
-        guard let index = profiles.firstIndex(where: { $0.id == id }) else { return }
-        if id == selectedID {
-            let successor = profiles[index == 0 ? 1 : index - 1]
-            try select(successor.id)
+    private static func validateReference(_ profile: SessionProfile,
+                                          in catalog: SessionProfileCatalog) throws(ProfileError) {
+        if let id = profile.glossaryID, !catalog.glossaries.contains(where: { $0.id == id }) {
+            throw .missingGlossary
         }
-        profiles.remove(at: index)
-        persist()
     }
 
-    // MARK: - CLI edits
-
-    /// Reads the mirror keys back into the selected profile. A value that
-    /// differs from the profile can only have been written from outside — the
-    /// store is the app's sole writer — so it is taken as an edit of the
-    /// selected profile, exactly as if it had been typed into the settings.
-    /// With `syncLayout`, a mode or language change is followed by the same
-    /// layout re-sync a typed change gets; launch passes false, since the
-    /// panel is about to be built from the mirror anyway.
     func importMirrorIntoSelected(syncLayout: Bool = true) {
-        guard let index = profiles.firstIndex(where: { $0.id == selectedID }) else { return }
-        let stored = profiles[index]
-        Preferences.restoreProvisionalTranslationIfUnset(stored.provisionalTranslation)
-        let mirrored = SessionProfile.fromPreferences(id: stored.id, name: stored.name)
-        guard mirrored != stored else { return }
-        profiles[index] = mirrored
-        persist()
-        if syncLayout, mirrored.layoutDiffers(from: stored) {
-            AppDelegate.applySettingsChange()
+        guard loadError == nil else { return }
+        do {
+            try transact(syncLayout: syncLayout) { _ in }
+        } catch {
+            loadError = error
         }
     }
 
-    // MARK: - Persistence
-
-    private func persist() {
-        UserDefaults.standard.set(try? JSONEncoder().encode(profiles), forKey: Self.profilesKey)
+    private func transact(syncLayout: Bool = true,
+                          _ edit: (inout SessionProfileCatalog) throws(ProfileError) -> Void) throws(ProfileError) {
+        if let loadError { throw loadError }
+        guard var candidate = catalog, let previous = candidate.selected,
+              let index = candidate.profiles.firstIndex(where: { $0.id == previous.id }) else {
+            throw .catalogUnreadable
+        }
+        Preferences.restoreProvisionalTranslationIfUnset(previous.provisionalTranslation, defaults: defaults)
+        let observed = MirrorSettings(defaults: defaults)
+        let text = candidate.text(for: previous)
+        let resolved = MirrorSettings(profile: previous, glossary: text ?? observed.glossary)
+        let imported = resolved.importing(observed, since: candidate.mirrorBaseline)
+        candidate.profiles[index] = imported.applying(to: previous)
+        var importedGlossary: Glossary?
+        let glossaryChanged = text != nil && imported.glossary != resolved.glossary
+        if glossaryChanged {
+            if imported.glossary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                candidate.profiles[index].glossaryID = nil
+            } else {
+                let glossary = Glossary(
+                    id: UUID(), name: SessionProfileCatalog.uniqueName(
+                        LF("glossaries.migratedName", previous.name), taken: candidate.glossaries.map(\.name)),
+                    text: imported.glossary)
+                candidate.glossaries.append(glossary)
+                candidate.profiles[index].glossaryID = glossary.id
+                importedGlossary = glossary
+            }
+        }
+        try edit(&candidate)
+        if candidate != catalog {
+            candidate.mirrorBaseline = observed
+            try persist(candidate)
+        } else {
+            writeMirror(candidate)
+        }
+        if glossaryChanged {
+            if let importedGlossary,
+               !candidate.profiles.contains(where: { $0.glossaryID == importedGlossary.id }) {
+                glossaryNotice = LF("glossaries.notice.unused", importedGlossary.name)
+            } else if let updated = candidate.profiles.first(where: { $0.id == previous.id }),
+                      updated.glossaryID != previous.glossaryID {
+                glossaryNotice = LF("glossaries.notice.detached", previous.name)
+            }
+        }
+        if syncLayout, let next = candidate.selected, next.layoutDiffers(from: previous) {
+            layoutChanged()
+        }
     }
 
-    private func persistSelection() {
-        UserDefaults.standard.set(selectedID.uuidString, forKey: Self.selectedKey)
+    private func persist(_ candidate: SessionProfileCatalog) throws(ProfileError) {
+        try candidate.validate()
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(candidate)
+        } catch {
+            throw .saveFailed
+        }
+        defaults.set(data, forKey: Self.catalogKey)
+        catalog = candidate
+        writeMirror(candidate)
     }
 
-    /// Writes a profile to the keys the engine reads at start.
-    private func writeMirror(_ profile: SessionProfile) {
-        Preferences.sessionMode = profile.mode
-        Preferences.audioSource = profile.audioSource
-        Preferences.sourceLocaleID = profile.sourceLocaleID
-        Preferences.targetLocaleID = profile.targetLocaleID
-        Preferences.translationBackend = profile.backend
-        Preferences.openAIBaseURL = profile.openAIBaseURL
-        Preferences.openAIModel = profile.openAIModel
-        Preferences.claudeModel = profile.claudeModel
-        Preferences.provisionalTranslationEnabled = profile.provisionalTranslation
-        Preferences.glossary = profile.glossary
-    }
-
-    /// `base`, or `base 2`, `base 3`, … — the first that no profile in `among`
-    /// already uses. Names have to stay distinct because a UUID tells two
-    /// profiles apart and a reader cannot.
-    private static func uniqueName(_ base: String, among profiles: [SessionProfile]) -> String {
-        let taken = Set(profiles.map(\.name))
-        let trimmed = base.trimmingCharacters(in: .whitespaces)
-        guard taken.contains(trimmed) else { return trimmed }
-        var n = 2
-        while taken.contains("\(trimmed) \(n)") { n += 1 }
-        return "\(trimmed) \(n)"
+    private func writeMirror(_ candidate: SessionProfileCatalog) {
+        guard let selected = candidate.selected else { return }
+        let text = candidate.text(for: selected)
+        MirrorSettings(profile: selected, glossary: text ?? "")
+            .write(to: defaults, includeGlossary: text != nil)
     }
 }

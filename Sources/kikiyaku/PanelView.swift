@@ -163,7 +163,12 @@ struct PanelView: View {
                     // in a Terminal has had no other chance to be seen.
                     let store = SessionProfileStore.shared
                     store.importMirrorIntoSelected()
-                    if let problem = store.selected.setupProblem {
+                    if let error = store.loadError {
+                        state.notice = PanelNotice(kind: .warning, message: error.message)
+                        AppDelegate.requestShowSettings()
+                        return
+                    }
+                    if let problem = store.selected?.setupProblem {
                         state.notice = PanelNotice(
                             kind: .warning,
                             message: LF("notice.setupNeeded", problem.message))

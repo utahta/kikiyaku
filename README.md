@@ -87,16 +87,28 @@ Each saved JSONL line contains an utterance's time, capture channel, recognized 
 
 ### Profiles and glossaries
 
-A profile saves the mode, audio input, languages, translation connection, and glossary. Create or edit profiles in **Settings…**, and switch them there or from the menu bar. Stop the session before editing or switching profiles. Display settings are shared across profiles; API keys are stored separately per endpoint.
+A profile saves the mode, audio input, languages, translation connection, and a reference to one optional glossary. Create or edit profiles in **Settings…**, and switch them there or from the menu bar. Stop the session before editing or switching profiles. Display settings are shared across profiles; API keys are stored separately per endpoint.
 
-Use the profile editor's **Glossary** field to specify names and technical terms, one mapping per line:
+Open **Settings… → Manage Glossaries…** to create a named glossary, then select it in each profile's **Glossary** menu. Multiple profiles can use the same glossary; copying a profile keeps that reference without duplicating the glossary. New profiles start with **None**. Enter names and technical terms in the glossary editor, one mapping per line:
 
 ```text
 締め切り = deadline
 ニューヨーク = New York
 ```
 
-The glossary is included in the translation prompt for either translation direction and either backend, including when you use a custom system prompt. It guides the LLM rather than changing speech recognition or applying exact text replacements. Leave it empty to use no glossary. Changes take effect when you start the next session.
+The glossary is included in the translation prompt for either translation direction and either backend, including when you use a custom system prompt. It guides the LLM rather than changing speech recognition or applying exact text replacements. Choose **None** to use no glossary. Transcription-only modes keep the reference but do not use its text.
+
+Saving a glossary updates it for every profile that uses it. You can edit glossaries during a session, but that session keeps the text captured at startup; changes take effect on the next start. Editing uses a local draft, so Cancel leaves saved values unchanged. The manager lists the profiles using each glossary and allows deletion only when none refer to it. Removing a profile or changing its reference does not automatically delete a glossary.
+
+Existing per-profile glossary text is migrated automatically, preserving whitespace and creating a separate glossary for each nonempty text, even when two texts match. Profiles with no text use **None**. The old settings are retained for recovery, but edits made after migration are stored only in the new catalog; switching back to an older app version does not synchronize those edits. If the catalog cannot be read, Settings offers a backup of the stored data before explicit recovery from the old settings (or initialization if none exist). Recovery loses post-migration edits, so prefer a valid backup or a compatible app version.
+
+The existing CLI key remains available:
+
+```sh
+defaults write com.utahta.kikiyaku glossary -string '締め切り = deadline'
+```
+
+An external text change creates a new glossary for the selected profile only; it does not overwrite a shared glossary. Empty or whitespace-only text removes that profile's reference. Changes are read at startup, when the app is reactivated or settings/profile menus are opened, before recording, and before settings are saved. If a profile draft replaces a just-imported reference, the imported text is kept as an unused glossary and a notice is shown. Interrupted mirror writes are repaired from the catalog; an external write equal to the previous synchronization baseline cannot be distinguished from such an interruption, so the catalog wins in that case.
 
 ### Provisional translation
 

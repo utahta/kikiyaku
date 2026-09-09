@@ -455,9 +455,18 @@ final class Engine {
         // mid-start would pair a new executable with this snapshot's model
         // and prompt. Only for the backend that uses it (a few stat() calls).
         let claudeBinary = backend == "claude" ? ClaudeBinary.resolve() : nil
+        let glossary: String
+        do {
+            glossary = try SessionProfileStore.shared.glossaryForNextSession()
+        } catch {
+            state.status = error.message
+            state.notice = PanelNotice(kind: .warning, message: error.message)
+            AppDelegate.requestShowSettings()
+            return
+        }
         let prompt = TranslationPrompt.build(
             template: Preferences.claudePromptOverride ?? ClaudeSession.defaultPromptTemplate,
-            glossary: Preferences.glossary)
+            glossary: glossary)
         let provisionalPreference = Preferences.provisionalTranslationEnabled
         // One hostTime→Date basis for the whole session (see SessionClock),
         // taken before any capture so every buffer's hostTime maps against it.

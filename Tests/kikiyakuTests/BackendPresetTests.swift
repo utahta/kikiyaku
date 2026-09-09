@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 
 @testable import kikiyaku
@@ -17,7 +18,7 @@ struct BackendPresetTests {
         p.openAIModel = "old-model"
         p.claudeModel = "claude-opus-5"
         p.provisionalTranslation = false
-        p.glossary = "deadline = 締め切り"
+        p.glossaryID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")
         return p
     }
 
@@ -27,7 +28,7 @@ struct BackendPresetTests {
             && after.sourceLocaleID == before.sourceLocaleID
             && after.targetLocaleID == before.targetLocaleID
             && after.provisionalTranslation == before.provisionalTranslation
-            && after.glossary == before.glossary
+            && after.glossaryID == before.glossaryID
     }
 
     @Test func openAIFillsTheThreeConnectionFields() {
