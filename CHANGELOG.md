@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.5.0](https://github.com/utahta/kikiyaku/compare/v0.4.0...v0.5.0) - 2026-09-09
+
+- Separate recognition and translation activity in the live panel by @utahta in https://github.com/utahta/kikiyaku/pull/11
+- Reduce profile editor input lag by @utahta in https://github.com/utahta/kikiyaku/pull/13
+- Add shared glossaries for session profiles by @utahta in https://github.com/utahta/kikiyaku/pull/14
+
 ## [v0.4.0](https://github.com/utahta/kikiyaku/compare/v0.3.1...v0.4.0) - 2026-09-06
 
 - Pin the pure logic under tests, and run them before a release by @utahta in https://github.com/utahta/kikiyaku/pull/7
