@@ -1,5 +1,9 @@
 # Changelog
 
+## [v0.5.1](https://github.com/utahta/kikiyaku/compare/v0.5.0...v0.5.1) - 2026-11-01
+
+- Follow Homebrew's new cask style rules by @utahta in https://github.com/utahta/kikiyaku/pull/15
+
 ## [v0.5.0](https://github.com/utahta/kikiyaku/compare/v0.4.0...v0.5.0) - 2026-09-09
 
 - Separate recognition and translation activity in the live panel by @utahta in https://github.com/utahta/kikiyaku/pull/11
