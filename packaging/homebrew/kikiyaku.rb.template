@@ -12,17 +12,16 @@ cask "kikiyaku" do
     strategy :github_latest
   end
 
-  depends_on macos: :tahoe
   depends_on arch: :arm64
+  depends_on macos: :tahoe
 
   app "Kikiyaku.app"
 
   # Kikiyaku is not notarized, so macOS quarantines the download and refuses
   # to open it, claiming the app is damaged. Clearing the flag here is what
   # spares everyone installing through Homebrew from doing it by hand.
-  postflight do
-    system_command "/usr/bin/xattr",
-                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Kikiyaku.app"]
+  postflight_steps do
+    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Kikiyaku.app"]
   end
 
   # Session transcripts live in ~/Library/Application Support/kikiyaku. They
